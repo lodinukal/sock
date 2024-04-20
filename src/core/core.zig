@@ -5,7 +5,7 @@ pub const Backend = enum {
     win32,
 };
 
-pub const using_backend = if (@hasDecl(root, "backend")) root.backend else Backend.win32;
+pub const using_backend: Backend = if (@hasDecl(root, "backend")) root.backend else Backend.win32;
 fn inferBackend() Backend {
     const builtin = @import("builtin");
     switch (builtin.target.os.tag) {

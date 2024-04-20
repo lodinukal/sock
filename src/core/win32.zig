@@ -33,7 +33,7 @@ pub const Window = struct {
             result |= WS_VISIBLE;
         }
         if (style.resizable) {
-            result |= WS_THICKFRAME;
+            result |= WS_THICKFRAME | WS_MAXIMIZEBOX | WS_MINIMIZEBOX;
         }
         if (style.caption) {
             result |= WS_CAPTION;
@@ -268,6 +268,8 @@ const WS_VISIBLE = 0x10000000; // visible
 const WS_ICONIC = 0x20000000; // minimized
 const WS_CAPTION = 0x00C00000; // title bar
 const WS_SYSMENU = 0x00080000; // system menu
+const WS_MINIMIZEBOX = 0x00020000; // minimize button
+const WS_MAXIMIZEBOX = 0x00010000; // maximize button
 
 const PM_REMOVE = 0x0001;
 
