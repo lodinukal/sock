@@ -16,17 +16,53 @@ fn inferBackend() Backend {
 
 pub const Window = @import("Window.zig");
 
-threadlocal var temp_memory = std.mem.zeroes([4096]u8);
-threadlocal var temp_allocator: ?std.heap.FixedBufferAllocator = null;
+pub fn Scratch(comptime size: u32) type {
+    return struct {
+        const Self = @This();
+        initialised: bool = false,
+        buf: [size]u8 = std.mem.zeroes([size]u8),
+        fba: std.heap.FixedBufferAllocator = undefined,
+
+        pub fn init(self: *Self) void {
+            if (!self.initialised) {
+                self.fba = std.heap.FixedBufferAllocator.init(&self.buf);
+                self.initialised = true;
+            }
+        }
+
+        pub fn allocator(self: *Self) std.mem.Allocator {
+            self.init();
+            return self.fba.allocator();
+        }
+
+        pub fn reset(self: *Self) void {
+            if (!self.initialised) return;
+            self.fba.reset();
+        }
+    };
+}
+
+threadlocal var temp_scratch = Scratch(4096){};
 
 pub fn tallocator() std.mem.Allocator {
-    if (temp_allocator == null) {
-        temp_allocator = std.heap.FixedBufferAllocator.init(&temp_memory);
-    }
     // already thread safe
-    return temp_allocator.?.allocator();
+    return temp_scratch.allocator();
 }
 
 pub fn treset() void {
-    temp_allocator.?.reset();
+    temp_scratch.reset();
+}
+
+pub fn err(comptime fmt: []const u8, args: anytype) void {
+    std.debug.panic("Error: " ++ fmt, args);
+}
+
+pub fn warn(comptime fmt: []const u8, args: anytype) void {
+    std.debug.print("Warning: " ++ fmt, args);
+}
+
+pub fn assert(check: bool, comptime fmt: []const u8, args: anytype) void {
+    if (!check) {
+        err(fmt, args);
+    }
 }

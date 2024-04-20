@@ -22,6 +22,16 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // vulkan
+    const vk_dep = b.dependency("vulkan", .{});
+    exe.addIncludePath(vk_dep.path("include"));
+    const volk_dep = b.dependency("volk", .{});
+    exe.addIncludePath(volk_dep.path(""));
+    exe.addCSourceFile(.{
+        .file = volk_dep.path("volk.c"),
+    });
+    exe.linkLibC();
+
     if (target.result.os.tag == .windows) {
         exe.linkSystemLibrary("Kernel32");
         exe.linkSystemLibrary("User32");

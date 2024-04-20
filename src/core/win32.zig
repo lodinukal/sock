@@ -9,7 +9,7 @@ pub const Window = struct {
     h_wnd: std.os.windows.HWND,
 
     fn getInterface(self: *Window) *InterfaceWindow {
-        return @fieldParentPtr(InterfaceWindow, "internal_window", self);
+        return @fieldParentPtr("internal_window", self);
     }
 
     pub const class_name = std.unicode.utf8ToUtf16LeStringLiteral("sock_window");
