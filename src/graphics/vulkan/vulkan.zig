@@ -43,7 +43,7 @@ fn getValidationLayers() []const [*c]const u8 {
     };
 }
 
-fn validationLayersSupported(required_layers: []const [*c]const u8) bool {
+fn validationLayersSupported(required_layers: []const [*c]const u8) !bool {
     var layer_count: u32 = 0;
     try vkCheck(
         c.vkEnumerateInstanceLayerProperties.?(&layer_count, null),
@@ -51,12 +51,15 @@ fn validationLayersSupported(required_layers: []const [*c]const u8) bool {
         .{},
     );
 
-    var layers = std.ArrayList(c.VkLayerProperties).initCapacity(
-        std.heap.c_allocator,
+    var temp = std.heap.stackFallback(@sizeOf(c.VkLayerProperties) * 100, std.heap.c_allocator);
+    const allocator = temp.get();
+
+    var layers = std.ArrayListUnmanaged(c.VkLayerProperties).initCapacity(
+        allocator,
         layer_count,
-    ) catch return false;
-    defer layers.deinit();
-    layers.resize(layer_count) catch return false;
+    ) catch return error.OutOfMemory;
+    defer layers.deinit(allocator);
+    layers.resize(allocator, layer_count) catch return false;
 
     try vkCheck(
         c.vkEnumerateInstanceLayerProperties.?(&layer_count, layers.items.ptr),
@@ -123,7 +126,22 @@ var context: struct {
     physical_device: c.VkPhysicalDevice = null,
 } = .{};
 
-fn suitableDevice(device: c.VkPhysicalDevice) bool {
+fn findQueueFamilies(device: c.VkPhysicalDevice, allocator: std.mem.Allocator) !std.ArrayListUnmanaged(c.VkQueueFamilyProperties) {
+    var queue_family_count: u32 = 0;
+    c.vkGetPhysicalDeviceQueueFamilyProperties.?(device, &queue_family_count, null);
+
+    var queue_families = std.ArrayListUnmanaged(c.VkQueueFamilyProperties).initCapacity(
+        allocator,
+        queue_family_count,
+    ) catch return error.OutOfMemory;
+    queue_families.resize(allocator, queue_family_count) catch unreachable;
+
+    c.vkGetPhysicalDeviceQueueFamilyProperties.?(device, &queue_family_count, queue_families.items.ptr);
+    return queue_families;
+}
+
+/// 0 is unsupported, anything else is supported
+fn deviceRating(device: c.VkPhysicalDevice) !u32 {
     var properties = c.VkPhysicalDeviceProperties{};
     c.vkGetPhysicalDeviceProperties.?(device, &properties);
 
@@ -131,18 +149,50 @@ fn suitableDevice(device: c.VkPhysicalDevice) bool {
     var got_13 = c.VkPhysicalDeviceVulkan13Features{
         .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
     };
-    c.vkGetPhysicalDeviceFeatures.?(device, @ptrCast(&got_13));
     var got_12 = c.VkPhysicalDeviceVulkan12Features{
         .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
     };
-    c.vkGetPhysicalDeviceFeatures.?(device, @ptrCast(&got_12));
+    var physical_features2 = c.VkPhysicalDeviceFeatures2{
+        .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+    };
+    physical_features2.pNext = &got_13;
+    got_13.pNext = &got_12;
+    c.vkGetPhysicalDeviceFeatures2.?(device, &physical_features2);
 
     const supported = (got_13.dynamicRendering == c.VK_TRUE and got_13.synchronization2 == c.VK_TRUE and
         got_12.bufferDeviceAddress == c.VK_TRUE and got_12.descriptorIndexing == c.VK_TRUE);
-    return properties.deviceType == c.VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU and supported;
+
+    if (!supported) {
+        return 0;
+    }
+
+    var temp_queue_families = std.heap.stackFallback(512, std.heap.c_allocator);
+    const allocator = temp_queue_families.get();
+    var queues = try findQueueFamilies(device, allocator);
+    defer queues.deinit(allocator);
+
+    // needs a graphics and a present queue
+    var graphics: u32 = 0;
+    var transfer: u32 = 0;
+    var compute: u32 = 0;
+    for (queues.items) |queue| {
+        if (queue.queueFlags & c.VK_QUEUE_GRAPHICS_BIT != 0) {
+            graphics += 1;
+        }
+        if (queue.queueFlags & c.VK_QUEUE_TRANSFER_BIT != 0) {
+            transfer += 1;
+        }
+        if (queue.queueFlags & c.VK_QUEUE_COMPUTE_BIT != 0) {
+            compute += 1;
+        }
+    }
+
+    if (graphics == 0 or transfer == 0 or compute == 0) return 0;
+
+    return 1;
 }
 
-fn pickPhysicalDevice() void {
+fn pickPhysicalDevice() !c.VkPhysicalDevice {
     var device_count: u32 = 0;
     try vkCheck(
         c.vkEnumeratePhysicalDevices.?(context.instance, &device_count, null),
@@ -153,10 +203,12 @@ fn pickPhysicalDevice() void {
         core.err("failed to find GPUs with Vulkan support", .{});
     }
 
+    var temp = std.heap.stackFallback(@sizeOf(c.VkPhysicalDevice) * 5, std.heap.c_allocator);
+
     var devices = std.ArrayList(c.VkPhysicalDevice).initCapacity(
-        std.heap.c_allocator,
+        temp.get(),
         device_count,
-    ) catch return;
+    ) catch return error.OutOfMemory;
     defer devices.deinit();
     devices.resize(device_count) catch unreachable;
 
@@ -166,15 +218,18 @@ fn pickPhysicalDevice() void {
         .{},
     );
 
-    for (devices.items) |device| {
-        const suitable = suitableDevice(device);
-        if (suitable) {
-            context.physical_device = device;
-            break;
+    var max_rating_index: ?usize = null;
+    var max_rating: u32 = 0;
+    for (devices.items, 0..) |device, i| {
+        const rating = try deviceRating(device);
+        if (rating > max_rating and rating != 0) {
+            max_rating = rating;
+            max_rating_index = i;
         }
     }
-
-    core.assert(context.physical_device != null, "failed to find a suitable GPU", .{});
+    core.assert(max_rating_index != null, "failed to find a suitable GPU", .{});
+    const best_device: c.VkPhysicalDevice = devices.items[max_rating_index.?];
+    return best_device;
 }
 
 pub fn init(app_name: []const u8, validation: bool) !void {
@@ -193,13 +248,14 @@ pub fn init(app_name: []const u8, validation: bool) !void {
         }),
     };
 
-    var temp_required_extensions = core.Scratch(512){};
-    temp_required_extensions.init();
+    var temp_required_extensions = std.heap.stackFallback(512, std.heap.c_allocator);
+    const allocator = temp_required_extensions.get();
 
-    const required_extensions = getRequiredExtensions(temp_required_extensions.allocator(), validation) catch unreachable;
+    var required_extensions = getRequiredExtensions(allocator, validation) catch unreachable;
+    defer required_extensions.deinit(allocator);
 
     const validation_layers = getValidationLayers();
-    if (validation and !validationLayersSupported(validation_layers)) {
+    if (validation and !(try validationLayersSupported(validation_layers))) {
         core.err("validation layers requested, but not available", .{});
         return error.ValidationLayersUnavailable;
     }
@@ -240,12 +296,15 @@ pub fn init(app_name: []const u8, validation: bool) !void {
         .{},
     );
 
-    var extensions = std.ArrayList(c.VkExtensionProperties).initCapacity(
-        std.heap.c_allocator,
+    var temp_extension_properties = std.heap.stackFallback(@sizeOf(c.VkExtensionProperties) * 100, std.heap.c_allocator);
+    const allocator_extension_properties = temp_extension_properties.get();
+
+    var extensions = std.ArrayListUnmanaged(c.VkExtensionProperties).initCapacity(
+        allocator_extension_properties,
         extension_count,
     ) catch return error.OutOfMemory;
-    defer extensions.deinit();
-    extensions.resize(extension_count) catch unreachable;
+    defer extensions.deinit(allocator_extension_properties);
+    extensions.resize(allocator_extension_properties, extension_count) catch unreachable;
 
     try vkCheck(
         c.vkEnumerateInstanceExtensionProperties.?(null, &extension_count, extensions.items.ptr),
@@ -259,7 +318,7 @@ pub fn init(app_name: []const u8, validation: bool) !void {
         std.debug.print("\t{s}\n", .{name});
     }
 
-    pickPhysicalDevice();
+    context.physical_device = try pickPhysicalDevice();
 }
 
 pub fn deinit() void {
