@@ -8,10 +8,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 const core = @import("../../core/core.zig");
 
-pub const Context = struct {
-    instance: c.VkInstance,
-};
-
 const ApiVersion = packed struct(u32) {
     variant: u7,
     major: u6,
@@ -120,10 +116,37 @@ fn debugCallback(
     return c.VK_FALSE;
 }
 
+const QueueType = enum {
+    graphics,
+    transfer,
+    compute,
+
+    pub fn toCFlag(self: QueueType) c.VkQueueFlagBits {
+        return switch (self) {
+            .graphics => c.VK_QUEUE_GRAPHICS_BIT,
+            .transfer => c.VK_QUEUE_TRANSFER_BIT,
+            .compute => c.VK_QUEUE_COMPUTE_BIT,
+        };
+    }
+
+    pub fn fromCFlag(flag: c.VkQueueFlagBits) ?QueueType {
+        return switch (flag) {
+            c.VK_QUEUE_GRAPHICS_BIT => .graphics,
+            c.VK_QUEUE_TRANSFER_BIT => .transfer,
+            c.VK_QUEUE_COMPUTE_BIT => .compute,
+            else => null,
+        };
+    }
+};
+
 var context: struct {
     instance: c.VkInstance = null,
     messenger: c.VkDebugUtilsMessengerEXT = null,
     physical_device: c.VkPhysicalDevice = null,
+    logical_device: c.VkDevice = null,
+
+    queues: std.EnumArray(QueueType, c.VkQueue) =
+        std.EnumArray(QueueType, c.VkQueue).initFill(null),
 } = .{};
 
 fn findQueueFamilies(device: c.VkPhysicalDevice, allocator: std.mem.Allocator) !std.ArrayListUnmanaged(c.VkQueueFamilyProperties) {
@@ -319,9 +342,105 @@ pub fn init(app_name: []const u8, validation: bool) !void {
     }
 
     context.physical_device = try pickPhysicalDevice();
+
+    // load the queues
+    var temp_queue_families = std.heap.stackFallback(512, std.heap.c_allocator);
+    const allocator_queue_families = temp_queue_families.get();
+    var queue_families = try findQueueFamilies(context.physical_device, allocator_queue_families);
+    defer queue_families.deinit(allocator_queue_families);
+
+    // create a logical device
+    var queue_create_infos = std.BoundedArray(c.VkDeviceQueueCreateInfo, 3).init(0) catch unreachable;
+    var queue_type_to_info_index = std.EnumMap(QueueType, usize).initFull(0);
+
+    const default_queue_priority: [:0]const f32 = &.{1.0};
+    for (std.enums.values(QueueType)) |queue_type| {
+        // check currently emplaced create infos to find a valid queue
+        var found = false;
+        const queue_bit = queue_type.toCFlag();
+        for (queue_create_infos.slice(), 0..) |*queue_family, index| {
+            const original_queue_family = &queue_families.items[queue_family.queueFamilyIndex];
+            if (original_queue_family.queueFlags & queue_bit != 0 and original_queue_family.queueCount > 0) {
+                queue_family.queueCount += 1;
+                original_queue_family.queueCount -= 1;
+                found = true;
+                queue_type_to_info_index.put(queue_type, index);
+                break;
+            }
+        }
+        if (!found) {
+            for (queue_families.items, 0..) |*queue_family, family_index| {
+                if (queue_family.queueFlags & queue_bit != 0 and queue_family.queueCount > 0) {
+                    queue_create_infos.appendAssumeCapacity(c.VkDeviceQueueCreateInfo{
+                        .sType = c.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                        .queueFamilyIndex = @intCast(family_index),
+                        .queueCount = 1,
+                        .pQueuePriorities = default_queue_priority.ptr,
+                    });
+                    queue_family.queueCount -= 1;
+                    found = true;
+                    queue_type_to_info_index.put(queue_type, queue_create_infos.len - 1);
+                    break;
+                }
+            }
+        }
+        core.assert(found, "failed to find a suitable queue family for {s}", .{@tagName(queue_type)});
+    }
+
+    std.debug.print("queue families:\n", .{});
+    for (queue_create_infos.constSlice()) |queue_family| {
+        std.debug.print(
+            "\tqueue family: {d}, queue count: {d}, priority: {d}\n",
+            .{ queue_family.queueFamilyIndex, queue_family.queueCount, queue_family.pQueuePriorities[0] },
+        );
+    }
+
+    // creating the logical device
+    const device_create_info = c.VkDeviceCreateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .queueCreateInfoCount = @intCast(queue_create_infos.len),
+        .pQueueCreateInfos = queue_create_infos.constSlice().ptr,
+        .enabledExtensionCount = 0,
+        .ppEnabledExtensionNames = null,
+        .enabledLayerCount = 0,
+        .ppEnabledLayerNames = null,
+        .pEnabledFeatures = null,
+    };
+
+    try vkCheck(
+        c.vkCreateDevice.?(context.physical_device, &device_create_info, null, &context.logical_device),
+        "failed to create logical device",
+        .{},
+    );
+
+    // get queues
+    for (std.enums.values(QueueType)) |queue_type| {
+        var queue: c.VkQueue = null;
+        const info_index = queue_type_to_info_index.get(queue_type) orelse {
+            core.err("failed to find queue family for {s}", .{@tagName(queue_type)});
+            unreachable;
+        };
+        const info: *c.VkDeviceQueueCreateInfo = &queue_create_infos.buffer[info_index];
+        if (info.queueCount > 0) {
+            c.vkGetDeviceQueue.?(context.logical_device, info.queueFamilyIndex, info.queueCount - 1, &queue);
+            info.queueCount -= 1;
+        }
+        context.queues.set(queue_type, queue);
+    }
+
+    std.debug.print("queues:\n", .{});
+    for (std.enums.values(QueueType)) |queue_type| {
+        const queue = context.queues.get(queue_type);
+        std.debug.print("\t{s}: {?}\n", .{ @tagName(queue_type), queue });
+    }
+
+    std.debug.print("vulkan: initialised\n", .{});
 }
 
 pub fn deinit() void {
+    if (context.logical_device) |logical_device|
+        c.vkDestroyDevice.?(logical_device, null);
+
     if (context.messenger) |messenger|
         c.vkDestroyDebugUtilsMessengerEXT.?(context.instance, messenger, null);
     c.vkDestroyInstance.?(context.instance, null);
