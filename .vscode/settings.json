@@ -1,0 +1,10 @@
+{
+  "files.associations": {
+    ".fantomasignore": "ignore",
+    "*.inl": "plaintext",
+    "*.jl": "julia",
+    "*.lua": "luau",
+    "windows.h": "c",
+    "vulkan_win32.h": "c"
+  }
+}

@@ -22,15 +22,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // vulkan
-    const vk_dep = b.dependency("vulkan", .{});
-    exe.addIncludePath(vk_dep.path("include"));
-    const volk_dep = b.dependency("volk", .{});
-    exe.addIncludePath(volk_dep.path(""));
-    exe.addCSourceFile(.{
-        .file = volk_dep.path("volk.c"),
-    });
-    exe.linkLibC();
+    var extra_volk_flags = std.ArrayList([]const u8).init(b.allocator);
+    defer extra_volk_flags.deinit();
 
     if (target.result.os.tag == .windows) {
         exe.linkSystemLibrary("Kernel32");
@@ -38,7 +31,19 @@ pub fn build(b: *std.Build) void {
         exe.addWin32ResourceFile(.{
             .file = .{ .path = "resources.rc" },
         });
+        extra_volk_flags.append("-DVK_USE_PLATFORM_WIN32_KHR") catch @panic("OOM");
     }
+
+    // vulkan
+    const vk_dep = b.dependency("vulkan", .{});
+    exe.addIncludePath(vk_dep.path("include"));
+    const volk_dep = b.dependency("volk", .{});
+    exe.addIncludePath(volk_dep.path(""));
+    exe.addCSourceFile(.{
+        .file = volk_dep.path("volk.c"),
+        .flags = extra_volk_flags.items,
+    });
+    exe.linkLibC();
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default

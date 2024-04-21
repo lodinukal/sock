@@ -1,6 +1,9 @@
 const c = @cImport({
     @cDefine("VK_NO_PROTOTYPES", "true");
     @cDefine("VK_EXT_debug_utils", "true");
+    if (core.using_backend == .win32) {
+        @cDefine("VK_USE_PLATFORM_WIN32_KHR", "true");
+    }
     @cInclude("vulkan/vulkan.h");
     @cInclude("volk.h");
 });
@@ -446,4 +449,39 @@ pub fn deinit() void {
     c.vkDestroyInstance.?(context.instance, null);
     // though this is not strictly necessary, it's good practice to clean up
     c.volkFinalize();
+}
+
+pub fn createSurface(window: *core.Window) !c.VkSurfaceKHR {
+    switch (core.using_backend) {
+        .win32 => {
+            const h_wnd = window.getNativeWindow();
+
+            const VkWin32SurfaceCreateInfoKHR = extern struct {
+                sType: c.VkStructureType = @import("std").mem.zeroes(c.VkStructureType),
+                pNext: ?*const anyopaque = @import("std").mem.zeroes(?*const anyopaque),
+                flags: c.VkWin32SurfaceCreateFlagsKHR = @import("std").mem.zeroes(c.VkWin32SurfaceCreateFlagsKHR),
+                hinstance: std.os.windows.HINSTANCE,
+                hwnd: std.os.windows.HWND,
+            };
+
+            const surface_create_info = VkWin32SurfaceCreateInfoKHR{
+                .sType = c.VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
+                .hinstance = @alignCast(@ptrCast(core.getInstance().?)),
+                .hwnd = @ptrCast(h_wnd),
+            };
+
+            var surface: c.VkSurfaceKHR = null;
+            try vkCheck(
+                c.vkCreateWin32SurfaceKHR.?(context.instance, @ptrCast(&surface_create_info), null, &surface),
+                "failed to create win32 surface",
+                .{},
+            );
+
+            return surface;
+        },
+    }
+}
+
+pub fn destroySurface(surface: c.VkSurfaceKHR) void {
+    c.vkDestroySurfaceKHR.?(context.instance, surface, null);
 }

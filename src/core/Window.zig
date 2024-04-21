@@ -52,3 +52,8 @@ pub fn pumpMessages() bool {
 pub fn shouldClose(window: *Self) bool {
     return window.should_close;
 }
+
+/// gets the native window
+pub fn getNativeWindow(window: *Self) *anyopaque {
+    return window.internal_window.getNativeWindow();
+}

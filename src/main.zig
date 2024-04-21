@@ -3,9 +3,14 @@ const sock = @import("sock.zig");
 
 const vulkan = @import("graphics/vulkan/vulkan.zig");
 
-fn rendering() !void {
+fn rendering(window: *sock.core.Window) !void {
     try vulkan.init("Graphics", true);
     defer vulkan.deinit();
+    const surface = try vulkan.createSurface(window);
+    defer vulkan.destroySurface(surface);
+    while (sock.core.Window.pumpMessages() and !window.shouldClose()) {
+        std.time.sleep(std.time.ns_per_ms * 16);
+    }
 }
 
 pub fn main() !void {
@@ -18,9 +23,5 @@ pub fn main() !void {
     const window = try sock.core.Window.create(allocator, .{ .title = "Graphics" }, .{});
     defer window.destroy(allocator);
 
-    try rendering();
-
-    while (sock.core.Window.pumpMessages() and !window.shouldClose()) {
-        std.time.sleep(std.time.ns_per_ms * 16);
-    }
+    try rendering(window);
 }

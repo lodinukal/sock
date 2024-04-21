@@ -5,13 +5,19 @@ pub const Backend = enum {
     win32,
 };
 
-pub const using_backend: Backend = if (@hasDecl(root, "backend")) root.backend else Backend.win32;
+pub const using_backend: Backend = if (@hasDecl(root, "backend")) root.backend else inferBackend();
 fn inferBackend() Backend {
     const builtin = @import("builtin");
-    switch (builtin.target.os.tag) {
+    return switch (builtin.target.os.tag) {
         .windows => Backend.win32,
         else => @compileError("Unsupported OS; add a backend to the root file."),
-    }
+    };
+}
+
+pub fn getInstance() ?*anyopaque {
+    return switch (using_backend) {
+        .win32 => @ptrCast(@import("win32.zig").getInstance()),
+    };
 }
 
 pub const Window = @import("Window.zig");

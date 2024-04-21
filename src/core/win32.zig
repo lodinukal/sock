@@ -15,7 +15,7 @@ pub const Window = struct {
     pub const class_name = std.unicode.utf8ToUtf16LeStringLiteral("sock_window");
     var registered_class: bool = false;
     fn registerWindowClass() void {
-        const h_instance: std.os.windows.HINSTANCE = @ptrCast(GetModuleHandleW(null));
+        const h_instance: std.os.windows.HINSTANCE = @ptrCast(getInstance());
         var wc = std.mem.zeroes(WNDCLASSW);
         wc.style = CS_HREDRAW | CS_VREDRAW;
         wc.lpfnWndProc = wndProc;
@@ -72,10 +72,11 @@ pub const Window = struct {
             @intCast(properties.height),
             null,
             null,
-            @ptrCast(GetModuleHandleW(null)),
+            @ptrCast(getInstance()),
             null,
         )) |h_wnd| {
             self.h_wnd = h_wnd;
+            std.debug.print("created window {*}\n", .{self.h_wnd});
         } else @panic("failed to create window");
         std.debug.assert(SetPropW(self.h_wnd, window_struct_prop, @ptrCast(self)));
 
@@ -130,10 +131,18 @@ pub const Window = struct {
             },
         }
     }
+
+    pub fn getNativeWindow(self: *Window) *anyopaque {
+        return @ptrCast(self.h_wnd);
+    }
 };
 
+pub fn getInstance() std.os.windows.HINSTANCE {
+    return @ptrCast(GetModuleHandleW(null));
+}
+
 // all of the win32 bindings used
-extern "Kernel32" fn GetModuleHandleW(
+pub extern "Kernel32" fn GetModuleHandleW(
     lpModuleName: ?std.os.windows.LPCSTR,
 ) callconv(.C) std.os.windows.HMODULE;
 
