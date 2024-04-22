@@ -1,70 +1,38 @@
 const root = @import("root");
 const std = @import("std");
 
-pub const Backend = enum {
-    win32,
-};
-
-pub const using_backend: Backend = if (@hasDecl(root, "backend")) root.backend else inferBackend();
-fn inferBackend() Backend {
-    const builtin = @import("builtin");
-    return switch (builtin.target.os.tag) {
-        .windows => Backend.win32,
-        else => @compileError("Unsupported OS; add a backend to the root file."),
-    };
-}
+pub const info = @import("info.zig");
 
 pub fn getInstance() ?*anyopaque {
-    return switch (using_backend) {
+    return switch (info.using_backend) {
         .win32 => @ptrCast(@import("win32.zig").getInstance()),
     };
 }
 
 pub const Window = @import("Window.zig");
+pub const FailingAllocator = @import("FailingAllocator.zig");
 
-pub fn Scratch(comptime size: u32) type {
-    return struct {
-        const Self = @This();
-        initialised: bool = false,
-        buf: [size]u8 = std.mem.zeroes([size]u8),
-        fba: std.heap.FixedBufferAllocator = undefined,
-
-        pub fn init(self: *Self) void {
-            if (!self.initialised) {
-                self.fba = std.heap.FixedBufferAllocator.init(&self.buf);
-                self.initialised = true;
-            }
-        }
-
-        pub fn allocator(self: *Self) std.mem.Allocator {
-            self.init();
-            return self.fba.allocator();
-        }
-
-        pub fn reset(self: *Self) void {
-            if (!self.initialised) return;
-            self.fba.reset();
-        }
-    };
-}
-
-threadlocal var temp_scratch = Scratch(4096){};
+threadlocal var temp_scratch = std.heap.stackFallback(4096, FailingAllocator.allocator());
 
 pub fn tallocator() std.mem.Allocator {
     // already thread safe
-    return temp_scratch.allocator();
+    return temp_scratch.get();
 }
 
 pub fn treset() void {
-    temp_scratch.reset();
+    temp_scratch.fixed_buffer_allocator.reset();
 }
 
 pub fn err(comptime fmt: []const u8, args: anytype) void {
-    std.debug.panic("Error: " ++ fmt, args);
+    std.debug.panic("Error: " ++ fmt ++ "\n", args);
 }
 
 pub fn warn(comptime fmt: []const u8, args: anytype) void {
-    std.debug.print("Warning: " ++ fmt, args);
+    std.debug.print("Warning: " ++ fmt ++ "\n", args);
+}
+
+pub fn log(comptime fmt: []const u8, args: anytype) void {
+    std.debug.print("Info: " ++ fmt ++ "\n", args);
 }
 
 pub fn assert(check: bool, comptime fmt: []const u8, args: anytype) void {

@@ -76,7 +76,6 @@ pub const Window = struct {
             null,
         )) |h_wnd| {
             self.h_wnd = h_wnd;
-            std.debug.print("created window {*}\n", .{self.h_wnd});
         } else @panic("failed to create window");
         std.debug.assert(SetPropW(self.h_wnd, window_struct_prop, @ptrCast(self)));
 
@@ -134,6 +133,12 @@ pub const Window = struct {
 
     pub fn getNativeWindow(self: *Window) *anyopaque {
         return @ptrCast(self.h_wnd);
+    }
+
+    pub fn getDimensions(self: *Window) struct { u32, u32 } {
+        var rect = std.mem.zeroes(std.os.windows.RECT);
+        _ = GetClientRect(self.h_wnd, &rect);
+        return .{ @intCast(rect.right), @intCast(rect.bottom) };
     }
 };
 
@@ -220,6 +225,11 @@ extern "User32" fn SetPropW(
     hWnd: std.os.windows.HWND,
     lpString: std.os.windows.LPCWSTR,
     hData: std.os.windows.HANDLE,
+) callconv(.C) bool; // std.os.windows.BOOL
+
+extern "User32" fn GetClientRect(
+    hWnd: std.os.windows.HWND,
+    lpRect: *std.os.windows.RECT,
 ) callconv(.C) bool; // std.os.windows.BOOL
 
 const WNDCLASSW = extern struct {

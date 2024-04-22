@@ -18,7 +18,7 @@ pub const Style = struct {
 
 pub const WindowError = std.mem.Allocator.Error || error{};
 
-const InternalWindow = switch (@import("core.zig").using_backend) {
+const InternalWindow = switch (@import("core.zig").info.using_backend) {
     .win32 => @import("win32.zig").Window,
 };
 
@@ -56,4 +56,9 @@ pub fn shouldClose(window: *Self) bool {
 /// gets the native window
 pub fn getNativeWindow(window: *Self) *anyopaque {
     return window.internal_window.getNativeWindow();
+}
+
+/// gets the dimensions of the window
+pub fn getDimensions(window: *Self) struct { u32, u32 } {
+    return window.internal_window.getDimensions();
 }
