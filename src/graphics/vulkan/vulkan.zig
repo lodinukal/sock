@@ -496,11 +496,130 @@ const SwapchainSupportInfo = struct {
 };
 
 pub const Swapchain = struct {
+    const FrameData = struct {
+        image: Image,
+        view: ImageView,
+
+        render_fence: c.VkFence = null,
+        present_semaphore: c.VkSemaphore = null,
+        render_semaphore: c.VkSemaphore = null,
+
+        pub fn deinit(self: *FrameData, logical_device: *const LogicalDevice) void {
+            // image is owned by the swapchain, so we don't need to free it.
+            // self.image.deinit();
+            self.view.deinit(logical_device);
+
+            logical_device.dispatch.vkDestroyFence.?(logical_device.handle, self.render_fence, null);
+            logical_device.dispatch.vkDestroySemaphore.?(logical_device.handle, self.present_semaphore, null);
+            logical_device.dispatch.vkDestroySemaphore.?(logical_device.handle, self.render_semaphore, null);
+        }
+    };
+    pub const max_frames_in_flight = 3;
+
     handle: c.VkSwapchainKHR = null,
-    images: []c.VkImage = &.{},
-    image_views: []c.VkImageView = &.{},
-    format: c.VkFormat = undefined,
+    format: Image.Format = .undefined,
     extent: c.VkExtent2D = undefined,
+
+    current_frame: u32 = 0,
+
+    frames: std.BoundedArray(FrameData, max_frames_in_flight),
+
+    pub fn deinit(self: *Swapchain, logical_device: *const LogicalDevice) void {
+        self.destroyResources(logical_device);
+        logical_device.dispatch.vkDestroySwapchainKHR.?(logical_device.handle, self.handle, null);
+    }
+
+    fn destroyResources(self: *Swapchain, logical_device: *const LogicalDevice) void {
+        for (self.frames.slice()) |*frame_data| {
+            frame_data.deinit(logical_device);
+        }
+    }
+
+    pub fn acquireNextImage(self: *Swapchain, logical_device: *const LogicalDevice) !u32 {
+        var image_index: u32 = 0;
+        try checkVk(logical_device.dispatch.vkAcquireNextImageKHR.?(
+            logical_device.handle,
+            self.handle,
+            std.time.ns_per_s,
+            self.frames.buffer[self.current_frame].present_semaphore,
+            null,
+            &image_index,
+        ));
+        return image_index;
+    }
+
+    pub fn getImage(self: *Swapchain, index: usize) !*Image {
+        return &self.frames.buffer[index].image;
+    }
+
+    pub fn getImageView(self: *Swapchain, index: usize) !*ImageView {
+        return &self.frames.buffer[index].image_view;
+    }
+
+    pub fn wait(self: *Swapchain, logical_device: *const LogicalDevice, frame_index: u32) !void {
+        const frame_data = &self.frames.buffer[frame_index];
+        try checkVk(logical_device.dispatch.vkWaitForFences.?(
+            logical_device.handle,
+            1,
+            &frame_data.render_fence,
+            c.VK_TRUE,
+            std.time.ns_per_s,
+        ));
+        try checkVk(logical_device.dispatch.vkResetFences.?(
+            logical_device.handle,
+            1,
+            &frame_data.render_fence,
+        ));
+    }
+
+    pub fn submit(
+        self: *Swapchain,
+        logical_device: *const LogicalDevice,
+        buffers: []const CommandBuffer,
+        swapchain_image_index: u32,
+    ) !void {
+        const frame_data = &self.frames.buffer[self.current_frame];
+
+        const wait_stage: u32 = c.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        const submit_info = c.VkSubmitInfo{
+            .sType = c.VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &frame_data.present_semaphore,
+            .pWaitDstStageMask = &wait_stage,
+            .commandBufferCount = @intCast(buffers.len),
+            .pCommandBuffers = @ptrCast(buffers.ptr),
+            .signalSemaphoreCount = 1,
+            .pSignalSemaphores = &frame_data.render_semaphore,
+        };
+
+        try checkVk(logical_device.dispatch.vkQueueSubmit.?(
+            logical_device.graphics_queue,
+            1,
+            &submit_info,
+            frame_data.render_fence,
+        ));
+
+        const present_info = c.VkPresentInfoKHR{
+            .sType = c.VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &frame_data.render_semaphore,
+            .swapchainCount = 1,
+            .pSwapchains = &self.handle,
+            .pImageIndices = &swapchain_image_index,
+        };
+
+        try checkVk(
+            logical_device.dispatch.vkQueuePresentKHR.?(logical_device.present_queue, &present_info),
+        );
+
+        self.current_frame = (self.current_frame + 1) % Swapchain.max_frames_in_flight;
+    }
+
+    pub fn configure(self: *Swapchain, logical_device: *LogicalDevice, opts: SwapchainCreateOpts) !void {
+        try logical_device.waitIdle();
+        self.deinit(logical_device);
+        self.* = try createSwapchain(opts);
+    }
 };
 
 pub const SwapchainCreateOpts = struct {
@@ -515,11 +634,8 @@ pub const SwapchainCreateOpts = struct {
     window_height: u32 = 0,
 };
 
-pub fn createSwapchain(allocator: std.mem.Allocator, opts: SwapchainCreateOpts) !Swapchain {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    var temp = std.heap.stackFallback(1024, arena.allocator());
+pub fn createSwapchain(opts: SwapchainCreateOpts) !Swapchain {
+    var temp = std.heap.stackFallback(2048, core.FailingAllocator.allocator());
     const temp_allocator = temp.get();
 
     const support_info = try SwapchainSupportInfo.init(temp_allocator, opts.physical_device.handle, opts.surface.handle);
@@ -540,11 +656,11 @@ pub fn createSwapchain(allocator: std.mem.Allocator, opts: SwapchainCreateOpts) 
         .sType = c.VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
         .surface = opts.surface.handle,
         .minImageCount = image_count,
-        .imageFormat = format,
+        .imageFormat = format.toVk(),
         .imageColorSpace = c.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
         .imageExtent = extent,
         .imageArrayLayers = 1,
-        .imageUsage = c.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .imageUsage = c.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | c.VK_IMAGE_USAGE_TRANSFER_DST_BIT,
         .preTransform = support_info.capabilities.currentTransform,
         .compositeAlpha = c.VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
         .presentMode = present_mode,
@@ -570,51 +686,74 @@ pub fn createSwapchain(allocator: std.mem.Allocator, opts: SwapchainCreateOpts) 
     core.log("Created vulkan swapchain.", .{});
 
     // Try and fetch the images from the swpachain.
-    var swapchain_image_count: u32 = undefined;
+    var swapchain_image_count: u32 = 0;
     try checkVk(opts.logical_device.dispatch.vkGetSwapchainImagesKHR.?(opts.logical_device.handle, swapchain, &swapchain_image_count, null));
-    const swapchain_images = try allocator.alloc(c.VkImage, swapchain_image_count);
-    errdefer allocator.free(swapchain_images);
-    try checkVk(opts.logical_device.dispatch.vkGetSwapchainImagesKHR.?(opts.logical_device.handle, swapchain, &swapchain_image_count, swapchain_images.ptr));
 
-    // Create image views for the swapchain images.
-    const swapchain_image_views = try allocator.alloc(c.VkImageView, swapchain_image_count);
-    errdefer allocator.free(swapchain_image_views);
+    var frames = std.BoundedArray(Swapchain.FrameData, Swapchain.max_frames_in_flight).init(swapchain_image_count) catch return error.oom;
+    var swapchain_images = std.BoundedArray(c.VkImage, Swapchain.max_frames_in_flight).init(frames.len) catch return error.oom;
+    try checkVk(opts.logical_device.dispatch.vkGetSwapchainImagesKHR.?(opts.logical_device.handle, swapchain, &swapchain_image_count, &swapchain_images.buffer));
 
-    for (swapchain_images, swapchain_image_views) |image, *view| {
-        view.* = try createImageView(opts.logical_device.handle, image, format, c.VK_IMAGE_ASPECT_COLOR_BIT, null);
+    for (&swapchain_images.buffer, 0..) |vk_image, index| {
+        frames.buffer[index].image = Image.init(vk_image, format, .{});
+
+        frames.buffer[index].view = try createImageView(
+            frames.buffer[index].image,
+            opts.logical_device,
+            format,
+            c.VK_IMAGE_ASPECT_COLOR_BIT,
+        );
+    }
+
+    const fence_info = c.VkFenceCreateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .flags = c.VK_FENCE_CREATE_SIGNALED_BIT,
+    };
+
+    const semaphore_info = c.VkSemaphoreCreateInfo{
+        .sType = c.VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+    };
+
+    for (0..Swapchain.max_frames_in_flight) |index| {
+        const frame = &frames.buffer[index];
+        try checkVk(opts.logical_device.dispatch.vkCreateFence.?(
+            opts.logical_device.handle,
+            &fence_info,
+            null,
+            &frame.render_fence,
+        ));
+        try checkVk(opts.logical_device.dispatch.vkCreateSemaphore.?(
+            opts.logical_device.handle,
+            &semaphore_info,
+            null,
+            &frame.present_semaphore,
+        ));
+        try checkVk(opts.logical_device.dispatch.vkCreateSemaphore.?(
+            opts.logical_device.handle,
+            &semaphore_info,
+            null,
+            &frame.render_semaphore,
+        ));
     }
 
     return .{
         .handle = swapchain,
-        .images = swapchain_images,
-        .image_views = swapchain_image_views,
+        .frames = frames,
         .format = format,
         .extent = extent,
     };
 }
 
-pub fn destroySwapchain(allocator: std.mem.Allocator, swapchain: *Swapchain, device: *const LogicalDevice) void {
-    for (swapchain.image_views) |view| {
-        device.dispatch.vkDestroyImageView.?(device.handle, view, null);
-    }
-    allocator.free(swapchain.image_views);
-    // images are owned by the swapchain, so we don't need to free them.
-    allocator.free(swapchain.images);
-    device.dispatch.vkDestroySwapchainKHR.?(device.handle, swapchain.handle, null);
-}
-
 fn createImageView(
-    device: c.VkDevice,
-    image: c.VkImage,
-    format: c.VkFormat,
+    image: Image,
+    logical_device: *const LogicalDevice,
+    format: Image.Format,
     aspect_flags: c.VkImageAspectFlags,
-    alloc_cb: ?*c.VkAllocationCallbacks,
-) !c.VkImageView {
+) !ImageView {
     const view_info = c.VkImageViewCreateInfo{
         .sType = c.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        .image = image,
+        .image = image.handle,
         .viewType = c.VK_IMAGE_VIEW_TYPE_2D,
-        .format = format,
+        .format = format.toVk(),
         .components = .{
             .r = c.VK_COMPONENT_SWIZZLE_IDENTITY,
             .g = c.VK_COMPONENT_SWIZZLE_IDENTITY,
@@ -631,22 +770,25 @@ fn createImageView(
     };
 
     var image_view: c.VkImageView = null;
-    try checkVk(c.vkCreateImageView.?(device, &view_info, alloc_cb, &image_view));
-    return image_view;
+    try checkVk(c.vkCreateImageView.?(logical_device.handle, &view_info, null, &image_view));
+    return .{
+        .handle = image_view,
+        .image = image,
+    };
 }
 
-fn pickSwapchainFormat(formats: []const c.VkSurfaceFormatKHR, opts: SwapchainCreateOpts) c.VkFormat {
+fn pickSwapchainFormat(formats: []const c.VkSurfaceFormatKHR, opts: SwapchainCreateOpts) Image.Format {
     // TODO: Add support for specifying desired format.
     _ = opts;
     for (formats) |format| {
         if (format.format == c.VK_FORMAT_B8G8R8A8_SRGB and
             format.colorSpace == c.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
         {
-            return format.format;
+            return @enumFromInt(format.format);
         }
     }
 
-    return formats[0].format;
+    return @enumFromInt(formats[0].format);
 }
 
 fn pickSwapchainPresentMode(modes: []const c.VkPresentModeKHR, opts: SwapchainCreateOpts) c.VkPresentModeKHR {
@@ -694,6 +836,10 @@ pub const LogicalDevice = struct {
     present_queue: c.VkQueue = null,
     compute_queue: c.VkQueue = null,
     transfer_queue: c.VkQueue = null,
+
+    pub fn waitIdle(self: *LogicalDevice) !void {
+        try checkVk(self.dispatch.vkDeviceWaitIdle.?(self.handle));
+    }
 };
 
 pub const LogicalDeviceCreateOpts = struct {
@@ -702,7 +848,7 @@ pub const LogicalDeviceCreateOpts = struct {
     /// The logical device features.
     features: c.VkPhysicalDeviceFeatures = .{},
     /// Optional pnext chain for VkDeviceCreateInfo.
-    pnext: ?*const anyopaque = null,
+    pnext: ?*anyopaque = null,
 };
 
 pub fn createLogicalDevice(allocator: std.mem.Allocator, opts: LogicalDeviceCreateOpts) !LogicalDevice {
@@ -736,16 +882,34 @@ pub fn createLogicalDevice(allocator: std.mem.Allocator, opts: LogicalDeviceCrea
         "VK_KHR_swapchain",
     };
 
+    var features13 = c.VkPhysicalDeviceVulkan13Features{
+        .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+        .synchronization2 = c.VK_TRUE,
+        .dynamicRendering = c.VK_TRUE,
+    };
+
+    var features12 = c.VkPhysicalDeviceVulkan12Features{
+        .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
+        .bufferDeviceAddress = c.VK_TRUE,
+        .descriptorIndexing = c.VK_TRUE,
+        .pNext = @ptrCast(&features13),
+    };
+
+    var features2 = c.VkPhysicalDeviceFeatures2{
+        .sType = c.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        .pNext = @ptrCast(&features12),
+    };
+
     const device_info = c.VkDeviceCreateInfo{
         .sType = c.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .pNext = opts.pnext,
+        .pNext = &features2,
         .queueCreateInfoCount = @as(u32, @intCast(queue_create_infos.items.len)),
         .pQueueCreateInfos = queue_create_infos.items.ptr,
         .enabledLayerCount = 0,
         .ppEnabledLayerNames = null,
         .enabledExtensionCount = @as(u32, @intCast(device_extensions.len)),
         .ppEnabledExtensionNames = device_extensions.ptr,
-        .pEnabledFeatures = &opts.features,
+        .pEnabledFeatures = null,
     };
 
     var device: c.VkDevice = null;
@@ -810,12 +974,38 @@ pub fn destroyCommandPool(device: *LogicalDevice, pool: *CommandPool) void {
 pub const CommandBuffer = struct {
     handle: c.VkCommandBuffer = null,
     command_pool: *const CommandPool,
+
+    pub fn reset(self: *CommandBuffer, logical_device: *const LogicalDevice) !void {
+        try checkVk(logical_device.dispatch.vkResetCommandBuffer.?(self.handle, 0));
+    }
+
+    pub fn begin(self: *CommandBuffer, logical_device: *const LogicalDevice, opts: CommandBufferBeginOpts) !void {
+        const begin_info = c.VkCommandBufferBeginInfo{
+            .sType = c.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = @bitCast(opts.flags),
+            .pInheritanceInfo = null,
+        };
+        try checkVk(logical_device.dispatch.vkBeginCommandBuffer.?(self.handle, &begin_info));
+    }
+
+    pub fn end(self: *CommandBuffer, logical_device: *const LogicalDevice) !void {
+        try checkVk(logical_device.dispatch.vkEndCommandBuffer.?(self.handle));
+    }
 };
 
 pub const CommandBufferCreateOpts = struct {
     logical_device: *const LogicalDevice,
     command_pool: *const CommandPool,
     level: enum { primary, secondary } = .primary,
+};
+
+pub const CommandBufferBeginOpts = struct {
+    flags: packed struct(u32) {
+        one_time: bool = true,
+        render_pass: bool = false,
+        simultaneous_use: bool = false,
+        _: u29 = 0,
+    } = .{},
 };
 
 pub fn allocateCommandBuffer(opts: CommandBufferCreateOpts) !CommandBuffer {
@@ -839,6 +1029,319 @@ pub fn allocateCommandBuffer(opts: CommandBufferCreateOpts) !CommandBuffer {
 
 pub fn freeCommandBuffer(device: *LogicalDevice, buffer: *CommandBuffer) void {
     device.dispatch.vkFreeCommandBuffers.?(device.handle, buffer.command_pool.handle, 1, &buffer.handle);
+}
+
+pub const Image = struct {
+    handle: c.VkImage = null,
+    memory: c.VkDeviceMemory = null,
+    format: Format = .undefined,
+    extent: c.VkExtent3D = undefined,
+
+    pub fn init(handle: c.VkImage, format: Format, extent: c.VkExtent3D) Image {
+        return .{
+            .handle = handle,
+            .format = format,
+            .extent = extent,
+        };
+    }
+
+    pub fn deinit(self: *Image, logical_device: *const LogicalDevice) void {
+        logical_device.dispatch.vkDestroyImage.?(logical_device.handle, self.handle, null);
+        logical_device.dispatch.vkFreeMemory.?(logical_device.handle, self.memory, null);
+    }
+
+    pub const Format = enum(u32) {
+        undefined = 0,
+        r4g4_unorm_pack8,
+        r4g4b4a4_unorm_pack16,
+        b4g4r4a4_unorm_pack16,
+        r5g6b5_unorm_pack16,
+        b5g6r5_unorm_pack16,
+        r5g5b5a1_unorm_pack16,
+        b5g5r5a1_unorm_pack16,
+        a1r5g5b5_unorm_pack16,
+        r8_unorm,
+        r8_snorm,
+        r8_uscaled,
+        r8_sscaled,
+        r8_uint,
+        r8_sint,
+        r8_srgb,
+        r8g8_unorm,
+        r8g8_snorm,
+        r8g8_uscaled,
+        r8g8_sscaled,
+        r8g8_uint,
+        r8g8_sint,
+        r8g8_srgb,
+        r8g8b8_unorm,
+        r8g8b8_snorm,
+        r8g8b8_uscaled,
+        r8g8b8_sscaled,
+        r8g8b8_uint,
+        r8g8b8_sint,
+        r8g8b8_srgb,
+        b8g8r8_unorm,
+        b8g8r8_snorm,
+        b8g8r8_uscaled,
+        b8g8r8_sscaled,
+        b8g8r8_uint,
+        b8g8r8_sint,
+        b8g8r8_srgb,
+        r8g8b8a8_unorm,
+        r8g8b8a8_snorm,
+        r8g8b8a8_uscaled,
+        r8g8b8a8_sscaled,
+        r8g8b8a8_uint,
+        r8g8b8a8_sint,
+        r8g8b8a8_srgb,
+        b8g8r8a8_unorm,
+        b8g8r8a8_snorm,
+        b8g8r8a8_uscaled,
+        b8g8r8a8_sscaled,
+        b8g8r8a8_uint,
+        b8g8r8a8_sint,
+        b8g8r8a8_srgb,
+        a8b8g8r8_unorm_pack32,
+        a8b8g8r8_snorm_pack32,
+        a8b8g8r8_uscaled_pack32,
+        a8b8g8r8_sscaled_pack32,
+        a8b8g8r8_uint_pack32,
+        a8b8g8r8_sint_pack32,
+        a8b8g8r8_srgb_pack32,
+        a2r10g10b10_unorm_pack32,
+        a2r10g10b10_snorm_pack32,
+        a2r10g10b10_uscaled_pack32,
+        a2r10g10b10_sscaled_pack32,
+        a2r10g10b10_uint_pack32,
+        a2r10g10b10_sint_pack32,
+        a2b10g10r10_unorm_pack32,
+        a2b10g10r10_snorm_pack32,
+        a2b10g10r10_uscaled_pack32,
+        a2b10g10r10_sscaled_pack32,
+        a2b10g10r10_uint_pack32,
+        a2b10g10r10_sint_pack32,
+        r16_unorm,
+        r16_snorm,
+        r16_uscaled,
+        r16_sscaled,
+        r16_uint,
+        r16_sint,
+        r16_sfloat,
+        r16g16_unorm,
+        r16g16_snorm,
+        r16g16_uscaled,
+        r16g16_sscaled,
+        r16g16_uint,
+        r16g16_sint,
+        r16g16_sfloat,
+        r16g16b16_unorm,
+        r16g16b16_snorm,
+        r16g16b16_uscaled,
+        r16g16b16_sscaled,
+        r16g16b16_uint,
+        r16g16b16_sint,
+        r16g16b16_sfloat,
+        r16g16b16a16_unorm,
+        r16g16b16a16_snorm,
+        r16g16b16a16_uscaled,
+        r16g16b16a16_sscaled,
+        r16g16b16a16_uint,
+        r16g16b16a16_sint,
+        r16g16b16a16_sfloat,
+        r32_uint,
+        r32_sint,
+        r32_sfloat,
+        r32g32_uint,
+        r32g32_sint,
+        r32g32_sfloat,
+        r32g32b32_uint,
+        r32g32b32_sint,
+        r32g32b32_sfloat,
+        r32g32b32a32_uint,
+        r32g32b32a32_sint,
+        r32g32b32a32_sfloat,
+        r64_uint,
+        r64_sint,
+        r64_sfloat,
+        r64g64_uint,
+        r64g64_sint,
+        r64g64_sfloat,
+        r64g64b64_uint,
+        r64g64b64_sint,
+        r64g64b64_sfloat,
+        r64g64b64a64_uint,
+        r64g64b64a64_sint,
+        r64g64b64a64_sfloat,
+        b10g11r11_ufloat_pack32,
+        e5b9g9r9_ufloat_pack32,
+        d16_unorm,
+        x8_d24_unorm_pack32,
+        d32_sfloat,
+        s8_uint,
+        d16_unorm_s8_uint,
+        d24_unorm_s8_uint,
+        d32_sfloat_s8_uint,
+        bc1_rgb_unorm_block,
+        bc1_rgb_srgb_block,
+        bc1_rgba_unorm_block,
+        bc1_rgba_srgb_block,
+        bc2_unorm_block,
+        bc2_srgb_block,
+        bc3_unorm_block,
+        bc3_srgb_block,
+        bc4_unorm_block,
+        bc4_snorm_block,
+        bc5_unorm_block,
+        bc5_snorm_block,
+        bc6h_ufloat_block,
+        bc6h_sfloat_block,
+        bc7_unorm_block,
+        bc7_srgb_block,
+        etc2_r8g8b8_unorm_block,
+        etc2_r8g8b8_srgb_block,
+        etc2_r8g8b8a1_unorm_block,
+        etc2_r8g8b8a1_srgb_block,
+        etc2_r8g8b8a8_unorm_block,
+        etc2_r8g8b8a8_srgb_block,
+        eac_r11_unorm_block,
+        eac_r11_snorm_block,
+        eac_r11g11_unorm_block,
+        eac_r11g11_snorm_block,
+        astc_4x4_unorm_block,
+        astc_4x4_srgb_block,
+        astc_5x4_unorm_block,
+        astc_5x4_srgb_block,
+        astc_5x5_unorm_block,
+        astc_5x5_srgb_block,
+        astc_6x5_unorm_block,
+        astc_6x5_srgb_block,
+        astc_6x6_unorm_block,
+        astc_6x6_srgb_block,
+        astc_8x5_unorm_block,
+        astc_8x5_srgb_block,
+        astc_8x6_unorm_block,
+        astc_8x6_srgb_block,
+        astc_8x8_unorm_block,
+        astc_8x8_srgb_block,
+        astc_10x5_unorm_block,
+        astc_10x5_srgb_block,
+        astc_10x6_unorm_block,
+        astc_10x6_srgb_block,
+        astc_10x8_unorm_block,
+        astc_10x8_srgb_block,
+        astc_10x10_unorm_block,
+        astc_10x10_srgb_block,
+        astc_12x10_unorm_block,
+        astc_12x10_srgb_block,
+        astc_12x12_unorm_block,
+        astc_12x12_srgb_block,
+        _,
+
+        pub fn toVk(self: Format) c.VkFormat {
+            return @intFromEnum(self);
+        }
+
+        pub fn fromVk(format: c.VkFormat) Format {
+            return @enumFromInt(format);
+        }
+    };
+
+    pub const Layout = enum(u32) {
+        undefined = 0,
+        general,
+        color_attachment_optimal,
+        depth_stencil_attachment_optimal,
+        depth_stencil_read_only_optimal,
+        shader_read_only_optimal,
+        transfer_src_optimal,
+        transfer_dst_optimal,
+        preinitialised,
+        present = c.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        _,
+
+        pub fn toVk(self: Layout) c.VkImageLayout {
+            return switch (self) {
+                .undefined => c.VK_IMAGE_LAYOUT_UNDEFINED,
+                .general => c.VK_IMAGE_LAYOUT_GENERAL,
+                .color_attachment_optimal => c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .depth_stencil_attachment_optimal => c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                .depth_stencil_read_only_optimal => c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+                .shader_read_only_optimal => c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .transfer_src_optimal => c.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                .transfer_dst_optimal => c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                .preinitialised => c.VK_IMAGE_LAYOUT_PREINITIALIZED,
+                else => |layout| @intFromEnum(layout),
+            };
+        }
+
+        pub fn fromVk(layout: c.VkImageLayout) Layout {
+            return switch (layout) {
+                c.VK_IMAGE_LAYOUT_UNDEFINED => .undefined,
+                c.VK_IMAGE_LAYOUT_GENERAL => .general,
+                c.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL => .color_attachment_optimal,
+                c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL => .depth_stencil_attachment_optimal,
+                c.VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL => .depth_stencil_read_only_optimal,
+                c.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL => .shader_read_only_optimal,
+                c.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL => .transfer_src_optimal,
+                c.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL => .transfer_dst_optimal,
+                c.VK_IMAGE_LAYOUT_PREINITIALIZED => .preinitialised,
+                else => @enumFromInt(layout),
+            };
+        }
+    };
+};
+
+pub const ImageView = struct {
+    handle: c.VkImageView = null,
+    image: Image,
+
+    pub fn deinit(self: *ImageView, logical_device: *const LogicalDevice) void {
+        logical_device.dispatch.vkDestroyImageView.?(logical_device.handle, self.handle, null);
+    }
+};
+
+pub fn transitionImage(command_buffer: *CommandBuffer, logical_device: *const LogicalDevice, image: *Image, old_layout: Image.Layout, new_layout: Image.Layout) !void {
+    if (old_layout == new_layout) {
+        return;
+    }
+
+    const image_aspect_mask: u32 = switch (new_layout) {
+        .depth_stencil_attachment_optimal => c.VK_IMAGE_ASPECT_DEPTH_BIT,
+        else => c.VK_IMAGE_ASPECT_COLOR_BIT,
+    };
+
+    const image_barrier = c.VkImageMemoryBarrier2{
+        .sType = c.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = c.VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        .srcAccessMask = c.VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .dstStageMask = c.VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        .dstAccessMask = c.VK_ACCESS_2_MEMORY_WRITE_BIT | c.VK_ACCESS_2_MEMORY_READ_BIT,
+
+        .oldLayout = old_layout.toVk(),
+        .newLayout = new_layout.toVk(),
+
+        .subresourceRange = imageSubresourceRange(image_aspect_mask),
+        .image = image.handle,
+    };
+
+    const dependency_info = c.VkDependencyInfo{
+        .sType = c.VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &image_barrier,
+    };
+
+    logical_device.dispatch.vkCmdPipelineBarrier2.?(command_buffer.handle, &dependency_info);
+}
+
+pub fn imageSubresourceRange(aspect_mask: u32) c.VkImageSubresourceRange {
+    return .{
+        .aspectMask = aspect_mask,
+        .baseMipLevel = 0,
+        .levelCount = c.VK_REMAINING_MIP_LEVELS,
+        .baseArrayLayer = 0,
+        .layerCount = c.VK_REMAINING_ARRAY_LAYERS,
+    };
 }
 
 pub fn checkVk(result: c.VkResult) !void {

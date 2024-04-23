@@ -23,8 +23,8 @@ fn rendering(allocator: std.mem.Allocator, window: *sock.core.Window) !void {
     });
     defer vulkan.destroyLogicalDevice(&ld);
 
-    const window_size = window.getDimensions();
-    var swap = try vulkan.createSwapchain(allocator, .{
+    var window_size = window.getDimensions();
+    var swap_opts: vulkan.SwapchainCreateOpts = .{
         .physical_device = pd,
         .logical_device = &ld,
         .surface = surface,
@@ -32,35 +32,87 @@ fn rendering(allocator: std.mem.Allocator, window: *sock.core.Window) !void {
         .window_height = window_size.@"1",
         .graphics_queue_family = pd.graphics_queue_family,
         .present_queue_family = pd.present_queue_family,
+    };
+    var swap = try vulkan.createSwapchain(swap_opts);
+    defer swap.deinit(&ld);
+
+    var command_pool = try vulkan.createCommandPool(.{
+        .logical_device = &ld,
+        .queue_family = pd.graphics_queue_family,
     });
-    defer vulkan.destroySwapchain(allocator, &swap, &ld);
-
-    const FrameData = struct {
-        command_pool: vulkan.CommandPool,
-        command_buffer: vulkan.CommandBuffer,
-    };
-    var frame_data = std.BoundedArray(FrameData, 2).init(2) catch unreachable;
-    inline for (0..2) |i| {
-        const command_pool = try vulkan.createCommandPool(.{
+    defer vulkan.destroyCommandPool(&ld, &command_pool);
+    var command_buffers = std.BoundedArray(vulkan.CommandBuffer, vulkan.Swapchain.max_frames_in_flight){};
+    for (0..command_buffers.buffer.len) |_| {
+        command_buffers.appendAssumeCapacity(try vulkan.allocateCommandBuffer(.{
             .logical_device = &ld,
-            .queue_family = pd.graphics_queue_family,
-        });
-        frame_data.buffer[i].command_pool = command_pool;
-        const command_buffer = try vulkan.allocateCommandBuffer(.{
-            .logical_device = &ld,
-            .command_pool = &frame_data.buffer[i].command_pool,
-        });
-        frame_data.buffer[i].command_buffer = command_buffer;
+            .command_pool = &command_pool,
+        }));
     }
-    defer for (&frame_data.buffer) |*fd| {
-        vulkan.freeCommandBuffer(&ld, &fd.command_buffer);
-        vulkan.destroyCommandPool(&ld, &fd.command_pool);
+    defer for (&command_buffers.buffer) |*cb| {
+        vulkan.freeCommandBuffer(&ld, cb);
     };
 
-    var frame_index: usize = 0;
+    // wait for everything to idle before cleanups
+    defer ld.waitIdle() catch {};
+
+    const red_clear_value = vulkan.c.VkClearColorValue{ .float32 = .{ 1.0, 0.0, 0.0, 1.0 } };
+    const green_clear_value = vulkan.c.VkClearColorValue{ .float32 = .{ 0.0, 1.0, 0.0, 1.0 } };
+    const blue_clear_value = vulkan.c.VkClearColorValue{ .float32 = .{ 0.0, 0.0, 1.0, 1.0 } };
+
+    var frame_index: u32 = 0;
     while (sock.core.Window.pumpMessages() and !window.shouldClose()) {
-        std.time.sleep(std.time.ns_per_ms * 16);
-        frame_index = (frame_index + 1) % 2;
+        const start_time = std.time.nanoTimestamp();
+
+        const new_window_size = window.getDimensions();
+        if (new_window_size.@"0" != window_size.@"0" or new_window_size.@"1" != window_size.@"1" and
+            new_window_size.@"0" != 0 and new_window_size.@"1" != 0)
+        {
+            window_size = new_window_size;
+            swap_opts.window_width = window_size.@"0";
+            swap_opts.window_height = window_size.@"1";
+            try swap.configure(&ld, swap_opts);
+            continue;
+        }
+        std.time.sleep(std.time.ns_per_us * 300);
+
+        try swap.wait(&ld, swap.current_frame);
+        const index = try swap.acquireNextImage(&ld);
+        const image = try swap.getImage(index);
+
+        const command_buffer = &command_buffers.buffer[frame_index];
+
+        try command_buffer.reset(&ld);
+
+        try command_buffer.begin(&ld, .{});
+
+        try vulkan.transitionImage(command_buffer, &ld, image, .undefined, .general);
+
+        ld.dispatch.vkCmdClearColorImage.?(
+            command_buffer.handle,
+            image.handle,
+            vulkan.Image.Layout.general.toVk(),
+            switch (index % 3) {
+                0 => &red_clear_value,
+                1 => &green_clear_value,
+                2 => &blue_clear_value,
+                else => unreachable,
+            },
+            1,
+            &vulkan.imageSubresourceRange(vulkan.c.VK_IMAGE_ASPECT_COLOR_BIT),
+        );
+
+        try vulkan.transitionImage(command_buffer, &ld, image, .general, .present);
+
+        try command_buffer.end(&ld);
+        try swap.submit(&ld, &.{command_buffer.*}, index);
+
+        frame_index = (frame_index + 1) % swap.frames.len;
+
+        const end_time = std.time.nanoTimestamp();
+        const elapsed_time = end_time - start_time;
+        const in_seconds = @divTrunc(elapsed_time, std.time.ns_per_s);
+        _ = in_seconds;
+        // std.debug.print("FPS: {}\n", .{1.0 / @as(f64, @floatFromInt(in_seconds))});
     }
 }
 
