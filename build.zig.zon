@@ -23,6 +23,9 @@
             .url = "git+https://github.com/zeux/volk/#vulkan-sdk-1.3.280",
             .hash = "12207914759d3c3dd9bcda8639285002a4c4182498875124b6f9e5cf58bcf4ef77b6",
         },
+        .machdxcompiler = .{
+            .path = "mach-dxcompiler",
+        },
     },
     .paths = .{
         // This makes *all* files, recursively, included in this package. It is generally

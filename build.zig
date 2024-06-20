@@ -17,7 +17,7 @@ pub fn build(b: *std.Build) void {
 
     const exe = b.addExecutable(.{
         .name = "sock",
-        .root_source_file = .{ .path = "src/main.zig" },
+        .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -29,7 +29,7 @@ pub fn build(b: *std.Build) void {
         exe.linkSystemLibrary("Kernel32");
         exe.linkSystemLibrary("User32");
         exe.addWin32ResourceFile(.{
-            .file = .{ .path = "resources.rc" },
+            .file = b.path("resources.rc"),
         });
         extra_volk_flags.append("-DVK_USE_PLATFORM_WIN32_KHR") catch @panic("OOM");
     }
@@ -44,6 +44,25 @@ pub fn build(b: *std.Build) void {
         .flags = extra_volk_flags.items,
     });
     exe.linkLibC();
+
+    // mach_dxc
+    const mach_dxc_dep = b.dependency("machdxcompiler", .{
+        .target = target,
+        .optimize = optimize,
+        .shared = true,
+        .spirv = true,
+        .from_source = true,
+    });
+    const shader_compiler = b.addExecutable(.{
+        .name = "shc",
+        .root_source_file = b.path("util/shader_compiler.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    shader_compiler.linkLibC();
+    shader_compiler.root_module.addImport("mach-dxcompiler", mach_dxc_dep.module("mach-dxcompiler"));
+    b.installArtifact(shader_compiler);
+    b.installArtifact(artifactLinkage(mach_dxc_dep, "machdxcompiler", .dynamic));
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
@@ -76,7 +95,7 @@ pub fn build(b: *std.Build) void {
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
     const lib_unit_tests = b.addTest(.{
-        .root_source_file = .{ .path = "src/root.zig" },
+        .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -84,7 +103,7 @@ pub fn build(b: *std.Build) void {
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
     const exe_unit_tests = b.addTest(.{
-        .root_source_file = .{ .path = "src/main.zig" },
+        .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -97,4 +116,23 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_exe_unit_tests.step);
+}
+
+fn artifactLinkage(d: *std.Build.Dependency, name: []const u8, linkage: std.builtin.LinkMode) *std.Build.Step.Compile {
+    var found: ?*std.Build.Step.Compile = null;
+    for (d.builder.install_tls.step.dependencies.items) |dep_step| {
+        const inst = dep_step.cast(std.Build.Step.InstallArtifact) orelse continue;
+        if (std.mem.eql(u8, inst.artifact.name, name) and inst.artifact.linkage == linkage) {
+            if (found != null) std.debug.panic("artifact name '{s}' is ambiguous", .{name});
+            found = inst.artifact;
+        }
+    }
+    return found orelse {
+        for (d.builder.install_tls.step.dependencies.items) |dep_step| {
+            const inst = dep_step.cast(std.Build.Step.InstallArtifact) orelse continue;
+            if (inst.artifact.linkage != linkage) continue;
+            std.log.info("available artifact: '{s}'", .{inst.artifact.name});
+        }
+        std.debug.panic("unable to find artifact '{s}'", .{name});
+    };
 }

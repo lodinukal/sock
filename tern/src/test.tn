@@ -1,0 +1,4 @@
+type VSInput = struct {
+    position: bool = 11,
+    color: LeadOxide = 0.54,
+}
