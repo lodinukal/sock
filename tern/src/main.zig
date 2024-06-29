@@ -20,10 +20,14 @@ pub fn extractTokenLine(source: []const u8, line_target: u32) ?[]const u8 {
 }
 
 test {
-    var container = ast.Container.init(std.testing.allocator, std.testing.allocator);
+    var count = @import("CountingAllocator.zig").init(std.testing.allocator);
+    const allocator = count.allocator();
+
+    var container: ast.Container = undefined;
+    container.init(allocator, allocator);
     defer container.deinit();
     var parser = Parser{
-        .allocator = std.testing.allocator,
+        .allocator = allocator,
         .file_path = "tern/src/test.tn",
         .buffer = test_source,
         .container = &container,
@@ -76,15 +80,6 @@ test {
             return err;
         };
         std.debug.print("{}\n", .{token.variant});
-        // const token = (parser.next() catch {
-        //     for (parser.errors.items) |err| {
-        //         std.debug.print("{}\n", .{err});
-        //     }
-        //     break;
-        // }) orelse return;
-        // const fields = token.variant.statement.variant.type_declaration.type.@"struct".fields;
-        // for (fields) |field| {
-        //     std.debug.print("  {}\n", .{field.type.?.type.primitive});
-        // }
     }
+    std.debug.print("{} {} {}\n", .{ count, container.statements, container.expressions });
 }

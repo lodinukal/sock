@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>name</key>
+    <string>tern</string>
+    <key>scopeName</key>
+    <string>source.tern</string>
+    <key>fileTypes</key>
+    <array>
+        <string>tn</string>
+        <string>tern</string>
+        <string>tnm</string>
+    </array>
+    <key>patterns</key>
+    <array>
+        <!-- Keywords -->
+        <dict>
+            <key>match</key>
+            <string>\b(fn|if|else|while|for|return|break|continue|struct|enum|export|pub|and|or|mut|let|true|false)\b</string>
+            <key>name</key>
+            <string>keyword.control.tern</string>
+        </dict>
+        
+        <!-- Comments -->
+        <dict>
+            <key>match</key>
+            <string>//.*$</string>
+            <key>name</key>
+            <string>comment.line.double-slash.tern</string>
+        </dict>
+        <dict>
+            <key>begin</key>
+            <string>/\*</string>
+            <key>end</key>
+            <string>\*/</string>
+            <key>name</key>
+            <string>comment.block.tern</string>
+        </dict>
+        
+        <!-- Strings -->
+        <dict>
+            <key>match</key>
+            <string>"[^"]*"</string>
+            <key>name</key>
+            <string>string.quoted.double.tern</string>
+        </dict>
+        <dict>
+            <key>match</key>
+            <string>'[^']*'</string>
+            <key>name</key>
+            <string>string.quoted.single.tern</string>
+        </dict>
+        
+        <!-- Numbers -->
+        <dict>
+            <key>match</key>
+            <string>\b[0-9]+(\.[0-9]+)?\b</string>
+            <key>name</key>
+            <string>constant.numeric.tern</string>
+        </dict>
+        
+        <!-- Operators -->
+        <dict>
+            <key>match</key>
+            <string>(\+|-|\*|/|%|&lt;|&gt;|=|!|&amp;|\||\^|~|\?|:)</string>
+            <key>name</key>
+            <string>keyword.operator.tern</string>
+        </dict>
+        
+        <!-- Function calls -->
+        <dict>
+            <key>match</key>
+            <string>\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(</string>
+            <key>captures</key>
+            <dict>
+                <key>1</key>
+                <dict>
+                    <key>name</key>
+                    <string>entity.name.function.tern</string>
+                </dict>
+            </dict>
+        </dict>
+    </array>
+</dict>
+</plist>

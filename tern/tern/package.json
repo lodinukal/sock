@@ -1,0 +1,25 @@
+{
+  "name": "tern",
+  "displayName": "Tern Language Support",
+  "description": "",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [{
+      "id": "tern",
+      "aliases": ["tern", "tern"],
+      "extensions": [".tn",".tern",".tnm"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "tern",
+      "scopeName": "source.tern",
+      "path": "./syntaxes/tern.tmLanguage"
+    }]
+  }
+}

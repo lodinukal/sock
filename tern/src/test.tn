@@ -3,7 +3,7 @@ pub let VSInput = struct {
     color: f32 = 0.54,
     mark: [4]f32 = {0 = 1, 1 = 2, 2 = 3, 3 = 4},
 }
-
+// this is a comment
 pub let hello = fn(a: i32) -> i32 {
     let m: bool = true
 }
