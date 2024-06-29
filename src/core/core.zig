@@ -12,7 +12,7 @@ pub fn getInstance() ?*anyopaque {
 pub const Window = @import("Window.zig");
 pub const FailingAllocator = @import("FailingAllocator.zig");
 
-threadlocal var temp_scratch = std.heap.stackFallback(4096, FailingAllocator.allocator());
+threadlocal var temp_scratch = std.heap.stackFallback(4096, std.testing.failing_allocator);
 
 pub fn tallocator() std.mem.Allocator {
     // already thread safe

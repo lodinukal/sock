@@ -1,7 +1,7 @@
 pub let VSInput = struct {
     position: bool = 11,
     color: f32 = 0.54,
-    mark: [4]f32 = {},
+    mark: [4]f32 = {0 = 1, 1 = 2, 2 = 3, 3 = 4},
 }
 
 pub let hello = fn(a: i32) -> i32 {

@@ -257,14 +257,24 @@ pub const FieldParseInfo = struct {
     type_requirement: Requirement = .disallow,
     value_requirement: Requirement = .disallow,
     allow_attributes: bool = false,
+    key_type: enum { identifier, expression } = .identifier,
 };
 pub fn parseField(self: *Parser, info: FieldParseInfo) ErrorSet!ast.Node.Field {
     // @ATTRIBUTES
     const attributes = try self.tryParseAttributes();
-    // IDENTIFIER
-    try self.expectCurrentTokenIsKind(.identifier);
-    const identifier = self.current_token.data;
-    try self.consumeKind(.identifier);
+    // KEY
+    const key = if (info.key_type == .expression) try self.parseExpression() else blk: {
+        if (!self.currentTokenIsKind(.identifier)) {
+            try self.pushErrorHere("expected identifier, got '{}'", .{self.current_token.kind});
+            return error.ExpectedIdentifier;
+        }
+        const data = self.current_token.data;
+        try self.consumeKind(.identifier);
+        break :blk try self.container.allocExpression(.{
+            .location = self.current_token.location,
+            .variant = .{ .expression = .{ .identifier = data } },
+        });
+    };
     // :
     const got_type: ?*ast.Node.Type =
         if (self.currentTokenIsKind(.colon))
@@ -303,7 +313,7 @@ pub fn parseField(self: *Parser, info: FieldParseInfo) ErrorSet!ast.Node.Field {
     };
     return .{
         .attributes = attributes,
-        .identifier = identifier,
+        .key = key,
         .type = got_type,
         .initialiser = got_default,
     };
@@ -846,8 +856,9 @@ pub fn parseStructureLiteral(self: *Parser) ErrorSet!*ast.Node.Expression {
     try self.consumeKind(.open_brace);
     const fields = try self.parseFieldList(.{
         .type_requirement = .disallow,
-        .value_requirement = .required,
+        .value_requirement = .allow,
         .allow_attributes = false,
+        .key_type = .expression,
     }, .close_brace);
     try self.consumeKind(.close_brace);
     return try self.container.allocExpression(.{ .location = self.current_token.location, .variant = .{ .expression = .{

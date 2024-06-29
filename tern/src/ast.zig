@@ -121,7 +121,7 @@ pub const Node = struct {
 
     pub const Field = struct {
         attributes: []const *Expression,
-        identifier: []const u8,
+        key: *Expression,
         type: ?*Type = null,
         initialiser: ?*Expression = null,
     };
