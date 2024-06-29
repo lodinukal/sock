@@ -80,6 +80,7 @@ pub const Token = struct {
         @"pub",
         @"and",
         @"or",
+        @"orelse",
         mut,
         let,
         true,
@@ -153,6 +154,7 @@ pub const Token = struct {
                 .@"pub" => "pub",
                 .@"and" => "and",
                 .@"or" => "or",
+                .@"orelse" => "orelse",
                 .mut => "mut",
                 .let => "let",
                 .true => "true",
@@ -177,6 +179,7 @@ pub const Token = struct {
                 .@"pub",
                 .@"and",
                 .@"or",
+                .@"orelse",
                 .mut,
                 .let,
                 .true,
@@ -207,6 +210,7 @@ pub const Token = struct {
                 .greater_greater,
                 .@"and",
                 .@"or",
+                .@"orelse",
                 => true,
                 else => false,
             };
@@ -214,6 +218,7 @@ pub const Token = struct {
 
         pub fn isAssignmentOperation(self: Kind) bool {
             return switch (self) {
+                .equal,
                 .plus_equal,
                 .minus_equal,
                 .star_equal,
@@ -242,6 +247,7 @@ pub const Token = struct {
 
         pub fn precedence(self: Kind) u32 {
             return switch (self) {
+                .@"orelse" => 0,
                 .@"or" => 1,
                 .@"and" => 2,
                 .pipe => 3,
@@ -253,6 +259,13 @@ pub const Token = struct {
                 .plus, .minus => 9,
                 .star, .slash, .slash_slash, .percent => 10,
                 else => 0,
+            };
+        }
+
+        pub fn shouldTurnToBlock(self: Kind) bool {
+            return switch (self) {
+                .@"orelse" => true,
+                else => false,
             };
         }
     };

@@ -1,11 +1,21 @@
 pub let VSInput = struct {
     position: bool = 11,
     color: f32 = 0.54,
-    mark: [4]f32 = {0 = 1, 1 = 2, 2 = 3, 3 = 4},
+    mark: [4]f32 = .{0 = 1, 1 = 2, 2 = 3, 3 = 4},
 }
 // this is a comment
 pub let hello = fn(a: i32) -> i32 {
     let m: bool = true
 }
 @serialise(1, 2, 4)
-pub let lambda = |x| m |= help(x)
+pub let lambda = |x| m.y(1+1) |= help(x)
+
+pub export fn fib(n: i32) -> struct {result: i32, success: bool} {
+    if (n < 0) {
+        return .{result = 0, success = false}
+    }
+    if (n <= 1) return .{result = n, success = true}
+    let minus_1 = fib(n - 1) orelse return .{result = 0, success = false}
+    let minus_2 = fib(n - 2) orelse return .{result = 0, success = false}
+    return .{result = minus_1.result + minus_2.result, success = got.success}
+}

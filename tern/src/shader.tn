@@ -1,0 +1,28 @@
+let vs_input = struct {
+    position: float3,
+    color: float3,
+}
+
+let vs_output = struct {
+    position: float4,
+    color: float3,
+}
+
+let ps_output = struct {
+    color: float4,
+}
+
+@VERTEX
+export fn vs_main(input: vs_input) -> vs_output {
+    return .{
+        position = float4(input.position[0], input.position[1], input.position[2], 1.0),
+        color = input.color,
+    }
+}
+
+@PIXEL
+export fn ps_main(input: vs_output) -> ps_output {
+    return .{
+        color = float4(input.color, 1.0),
+    }
+}

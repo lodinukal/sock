@@ -64,8 +64,13 @@ pub const Container = struct {
         self.root_stmts.deinit(self.allocator);
     }
 
-    pub fn pushRootStatement(self: *Container, node: *Statement) void {
-        try self.root_stmts.append(node);
+    pub fn pushRootStatement(self: *Container, node: *Statement) !void {
+        try self.root_stmts.append(self.allocator, node);
+    }
+
+    pub fn preheat(self: *Container, size: usize) !void {
+        self.node_allocator.free(try self.node_allocator.alloc(u8, size));
+        _ = self.node_arena.reset(.free_all);
     }
 
     pub fn allocExpression(self: *Container, expression: Expression) !*Expression {
@@ -157,6 +162,7 @@ pub const Expression = struct {
         integer_literal: i128,
         float_literal: f64,
         string_literal: []const u8,
+        enum_literal: []const u8,
         char_literal: u32,
         structure_literal: []Field,
         type: *Type,
@@ -198,6 +204,7 @@ pub const ExpressionKind = enum {
     integer_literal,
     float_literal,
     string_literal,
+    enum_literal,
     char_literal,
     structure_literal,
     type,
