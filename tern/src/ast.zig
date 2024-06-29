@@ -166,6 +166,7 @@ pub const Node = struct {
         float_literal: f64,
         string_literal: []const u8,
         char_literal: u32,
+        structure_literal: []Field,
         type: *Type,
         identifier: []const u8,
         binary: struct {
@@ -209,6 +210,7 @@ pub const Node = struct {
         float_literal,
         string_literal,
         char_literal,
+        structure_literal,
         type,
         identifier,
         binary,

@@ -205,7 +205,7 @@ pub fn parseType(self: *Parser) ErrorSet!*ast.Node.Type {
             try self.consumeKind(.open_paren);
             const parameters = try self.parseFieldList(.{
                 .type_requirement = .required,
-                .allow_default = true,
+                .value_requirement = .allow,
                 .allow_attributes = true,
             }, .close_paren);
             try self.consumeKind(.close_paren);
@@ -219,13 +219,13 @@ pub fn parseType(self: *Parser) ErrorSet!*ast.Node.Type {
                     try self.consumeKind(.open_paren);
                     break :blk try self.parseFieldList(.{
                         .type_requirement = .allow,
-                        .allow_default = true,
+                        .value_requirement = .allow,
                         .allow_attributes = true,
                     }, .close_paren);
                 }
                 const result = try self.arena_allocator.dupe(ast.Node.Field, &.{try self.parseField(.{
                     .type_requirement = .disallow,
-                    .allow_default = false,
+                    .value_requirement = .disallow,
                     .allow_attributes = false,
                 })});
                 break :blk result;
@@ -252,9 +252,10 @@ pub fn tryParseAttributes(self: *Parser) ErrorSet![]const *ast.Node.Expression {
     return attributes.items;
 }
 
-const FieldParseInfo = struct {
-    type_requirement: enum { allow, disallow, required } = .disallow,
-    allow_default: bool = false,
+pub const FieldParseInfo = struct {
+    pub const Requirement = enum { allow, disallow, required };
+    type_requirement: Requirement = .disallow,
+    value_requirement: Requirement = .disallow,
     allow_attributes: bool = false,
 };
 pub fn parseField(self: *Parser, info: FieldParseInfo) ErrorSet!ast.Node.Field {
@@ -286,14 +287,20 @@ pub fn parseField(self: *Parser, info: FieldParseInfo) ErrorSet!ast.Node.Field {
     const got_default: ?*ast.Node.Expression =
         if (self.currentTokenIsKind(.equal))
     blk: {
-        if (!info.allow_default) {
+        if (info.value_requirement == .disallow) {
             try self.pushErrorHere("unexpected token '=', you can't specify a default value here", .{});
             return error.UnexpectedToken;
         }
         // DEFAULT
         try self.consumeKind(.equal);
         break :blk try self.parseExpression();
-    } else null;
+    } else blk: {
+        if (info.value_requirement == .required) {
+            try self.pushErrorHere("expected value here (by token '='), got '{}'", .{self.current_token.kind});
+            return error.ExpectedTokenOfKind;
+        }
+        break :blk null;
+    };
     return .{
         .attributes = attributes,
         .identifier = identifier,
@@ -322,7 +329,7 @@ pub fn parseStructType(self: *Parser) ErrorSet!*ast.Node.Type {
     // FIELDS
     const fields = try self.parseFieldList(.{
         .type_requirement = .allow,
-        .allow_default = true,
+        .value_requirement = .allow,
         .allow_attributes = true,
     }, .close_brace);
     // }
@@ -699,9 +706,6 @@ pub fn parseBlockExpression(self: *Parser, info: ParseBlockInfo) ErrorSet!*ast.N
             break;
         }
         const statement = try self.parseStatement();
-        if (statement.variant == .assignment) {
-            std.debug.print("assignment {}\n", .{statement.variant.assignment.kind});
-        }
         try statements.append(self.arena_allocator, statement);
         if (!multiple_statements) {
             break;
@@ -759,10 +763,10 @@ pub fn parseUnaryExpression(self: *Parser) ErrorSet!*ast.Node.Expression {
 
 pub fn parsePrimaryExpression(self: *Parser) ErrorSet!*ast.Node.Expression {
     switch (self.current_token.kind) {
-        .open_bracket => {
-            try self.consumeKind(.open_bracket);
+        .open_paren => {
+            try self.consumeKind(.open_paren);
             const expr = try self.parseExpression();
-            try self.consumeKind(.close_bracket);
+            try self.consumeKind(.close_paren);
             return expr;
         },
         .identifier => {
@@ -828,11 +832,27 @@ pub fn parsePrimaryExpression(self: *Parser) ErrorSet!*ast.Node.Expression {
         .pipe => {
             return try self.parseCaptureLambdaExpression();
         },
+        .open_brace => {
+            return try self.parseStructureLiteral();
+        },
         else => {
             try self.pushErrorHere("unexpected token '{}'", .{self.current_token.kind});
             return error.UnexpectedToken;
         },
     }
+}
+
+pub fn parseStructureLiteral(self: *Parser) ErrorSet!*ast.Node.Expression {
+    try self.consumeKind(.open_brace);
+    const fields = try self.parseFieldList(.{
+        .type_requirement = .disallow,
+        .value_requirement = .required,
+        .allow_attributes = false,
+    }, .close_brace);
+    try self.consumeKind(.close_brace);
+    return try self.container.allocExpression(.{ .location = self.current_token.location, .variant = .{ .expression = .{
+        .structure_literal = fields,
+    } } });
 }
 
 pub fn parseIdentifierExpression(self: *Parser) ErrorSet!*ast.Node.Expression {
