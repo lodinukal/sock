@@ -29,7 +29,7 @@ test {
             }
             return err;
         };
-        std.debug.print("{}\n", .{token});
+        std.debug.print("{}\n", .{token.variant});
         // const token = (parser.next() catch {
         //     for (parser.errors.items) |err| {
         //         std.debug.print("{}\n", .{err});

@@ -10,6 +10,7 @@ pub const ErrorSet = error{
     ExpectedCommaOrCloseParen,
     ExpectedIdentifier,
     ExpectedIdentifierSameName,
+    UnexpectedStatementStart,
     ExpectedTokenOfKind,
     OutOfMemory,
     InvalidIntegerLiteral,
@@ -162,42 +163,7 @@ pub fn parseTopLevel(self: *Parser) ErrorSet!*ast.Node {
     if (self.current_token.kind == .eof) {
         return error.FinishedParsing;
     }
-    if (self.currentTokenIsKind(.type))
-        return try self.parseTypeDeclaration();
     return (try self.parseStatement()).node();
-}
-
-// type IDENTIFIER = TYPE
-pub fn parseTypeDeclaration(self: *Parser) ErrorSet!*ast.Node {
-    // type
-    try self.consumeKind(.type);
-    // IDENTIFIER
-    try self.expectCurrentTokenIsKind(.identifier);
-    const identifier = self.current_token.data;
-    try self.consumeKind(.identifier);
-    // =
-    try self.consumeKind(.equal);
-    // TYPE
-    const got_type = try self.parseType();
-
-    // const backing_type = if (kind == .@"enum" and self.currentTokenIsKind(.open_paren)) blk: {
-
-    // };
-    return try self.container.allocNode(.{
-        .location = self.current_token.location,
-        .variant = .{
-            .statement = .{
-                .attributes = &.{},
-                .variant = .{
-                    .type_declaration = .{
-                        .exported = false,
-                        .identifier = identifier,
-                        .type = got_type,
-                    },
-                },
-            },
-        },
-    });
 }
 
 pub fn parseType(self: *Parser) ErrorSet!*ast.Node.Type {
@@ -215,10 +181,13 @@ pub fn parseType(self: *Parser) ErrorSet!*ast.Node.Type {
                 const inner = try self.parseType();
                 return try self.container.allocType(.{ .span = inner });
             }
-            unreachable;
-            // const inner = try self.parseType();
-            // try self.consumeKind(.close_bracket);
-            // return try self.container.allocType(.{ .array = inner });
+            const length = try self.parseExpression();
+            try self.consumeKind(.close_bracket);
+            const inner = try self.parseType();
+            return try self.container.allocType(.{ .array = .{
+                .element = inner,
+                .length = length,
+            } });
         },
         .identifier => {
             const identifier = self.current_token.data;
@@ -231,6 +200,42 @@ pub fn parseType(self: *Parser) ErrorSet!*ast.Node.Type {
 
             return try self.container.allocType(.{ .expression = try self.parseExpression() });
         },
+        .@"fn" => {
+            try self.consumeKind(.@"fn");
+            try self.consumeKind(.open_paren);
+            const parameters = try self.parseFieldList(.{
+                .type_requirement = .required,
+                .allow_default = true,
+                .allow_attributes = true,
+            }, .close_paren);
+            try self.consumeKind(.close_paren);
+            // TODO: parse modifiers
+            const return_type = if (self.currentTokenIsKind(.arrow)) blk: {
+                try self.consumeKind(.arrow);
+
+                // tuple or single
+                const is_tuple = self.currentTokenIsKind(.open_paren);
+                if (is_tuple) {
+                    try self.consumeKind(.open_paren);
+                    break :blk try self.parseFieldList(.{
+                        .type_requirement = .allow,
+                        .allow_default = true,
+                        .allow_attributes = true,
+                    }, .close_paren);
+                }
+                const result = try self.arena_allocator.dupe(ast.Node.Field, &.{try self.parseField(.{
+                    .type_requirement = .disallow,
+                    .allow_default = false,
+                    .allow_attributes = false,
+                })});
+                break :blk result;
+            } else try self.arena_allocator.alloc(ast.Node.Field, 0);
+
+            return try self.container.allocType(.{ .function = .{
+                .parameters = parameters,
+                .return_type = return_type,
+            } });
+        },
         else => {
             try self.pushErrorHere("unexpected token '{}'", .{self.current_token.kind});
             return error.UnexpectedToken;
@@ -238,14 +243,23 @@ pub fn parseType(self: *Parser) ErrorSet!*ast.Node.Type {
     }
 }
 
+pub fn tryParseAttributes(self: *Parser) ErrorSet![]const *ast.Node.Expression {
+    var attributes = std.ArrayListUnmanaged(*ast.Node.Expression){};
+    while (self.currentTokenIsKind(.at)) {
+        try self.consumeKind(.at);
+        try attributes.append(self.arena_allocator, try self.parseExpression());
+    }
+    return attributes.items;
+}
+
 const FieldParseInfo = struct {
-    allow_type: bool = false,
+    type_requirement: enum { allow, disallow, required } = .disallow,
     allow_default: bool = false,
     allow_attributes: bool = false,
 };
 pub fn parseField(self: *Parser, info: FieldParseInfo) ErrorSet!ast.Node.Field {
     // @ATTRIBUTES
-    // const attributes = try self.parseAttributes();
+    const attributes = try self.tryParseAttributes();
     // IDENTIFIER
     try self.expectCurrentTokenIsKind(.identifier);
     const identifier = self.current_token.data;
@@ -254,14 +268,20 @@ pub fn parseField(self: *Parser, info: FieldParseInfo) ErrorSet!ast.Node.Field {
     const got_type: ?*ast.Node.Type =
         if (self.currentTokenIsKind(.colon))
     blk: {
-        if (!info.allow_type) {
+        if (info.type_requirement == .disallow) {
             try self.pushErrorHere("unexpected token ':', you can't specify a type here", .{});
             return error.UnexpectedToken;
         }
         // TYPE
         try self.consumeKind(.colon);
         break :blk try self.parseType();
-    } else null;
+    } else blk: {
+        if (info.type_requirement == .required) {
+            try self.pushErrorHere("expected type here (by token ':'), got '{}'", .{self.current_token.kind});
+            return error.ExpectedTokenOfKind;
+        }
+        break :blk null;
+    };
     // =
     const got_default: ?*ast.Node.Expression =
         if (self.currentTokenIsKind(.equal))
@@ -275,7 +295,7 @@ pub fn parseField(self: *Parser, info: FieldParseInfo) ErrorSet!ast.Node.Field {
         break :blk try self.parseExpression();
     } else null;
     return .{
-        .attributes = &.{},
+        .attributes = attributes,
         .identifier = identifier,
         .type = got_type,
         .initialiser = got_default,
@@ -287,7 +307,6 @@ pub fn parseFieldList(self: *Parser, info: FieldParseInfo, closer: Lexer.Token.K
     while (!self.currentTokenIsKind(closer)) {
         const field = try self.parseField(info);
         try fields.append(self.arena_allocator, field);
-        std.debug.print("{}\n", .{field});
         if (!self.currentTokenIsKind(closer)) {
             try self.consumeKind(.comma);
         }
@@ -302,7 +321,7 @@ pub fn parseStructType(self: *Parser) ErrorSet!*ast.Node.Type {
     try self.consumeKind(.open_brace);
     // FIELDS
     const fields = try self.parseFieldList(.{
-        .allow_type = true,
+        .type_requirement = .allow,
         .allow_default = true,
         .allow_attributes = true,
     }, .close_brace);
@@ -315,8 +334,7 @@ pub fn parseStructType(self: *Parser) ErrorSet!*ast.Node.Type {
 
 pub fn parseStatement(self: *Parser) ErrorSet!*ast.Node.Statement {
     // ATTRIBUTES
-    // const attributes = try self.parseAttributes();
-    const attributes: []const *ast.Node.Expression = &.{};
+    const attributes = try self.tryParseAttributes();
     switch (self.current_token.kind) {
         .@"if" => return try self.parseIfStatement(attributes),
         .@"while" => return try self.parseWhileStatement(attributes),
@@ -324,9 +342,28 @@ pub fn parseStatement(self: *Parser) ErrorSet!*ast.Node.Statement {
         .@"return" => return try self.parseReturnStatement(attributes),
         .@"break" => return try self.parseBreakStatement(attributes),
         .@"continue" => return try self.parseContinueStatement(attributes),
-        .mut => return try self.parseDeclaration(attributes),
-        .let => return try self.parseDeclaration(attributes),
-        else => return try self.parseExpressionStatement(attributes),
+        .mut,
+        .let,
+        .@"pub",
+        .@"export",
+        => return try self.parseDeclaration(attributes),
+        else => {
+            const expression = try self.parseExpressionStatement(attributes);
+            // peek ahead to check for assignment
+            if (self.current_token.kind.isAssignmentOperation()) {
+                const using_token = self.current_token.kind;
+                try self.consumeKind(self.current_token.kind);
+                return try self.parseAssignmentStatement(
+                    attributes,
+                    expression.variant.expression,
+                    using_token,
+                );
+            } else {
+                try self.pushErrorHere("unexpected token '{}'", .{self.current_token.kind});
+                return error.UnexpectedToken;
+            }
+            return expression;
+        },
     }
 }
 
@@ -336,10 +373,10 @@ pub fn parseCapture(self: *Parser) ErrorSet![]ast.Node.Field {
     var captures = std.ArrayListUnmanaged(ast.Node.Field){};
     while (!self.currentTokenIsKind(.pipe)) {
         const capture = try self.parseField(.{
-            .allow_type = true,
+            .type_requirement = .allow,
         });
         try captures.append(self.arena_allocator, capture);
-        if (!self.currentTokenIsKind(.pipe) or !self.currentTokenIsKind(.comma)) {
+        if (!self.currentTokenIsKind(.pipe) and !self.currentTokenIsKind(.comma)) {
             try self.pushErrorHere("expected ',' or '|', got '{}'", .{self.current_token.kind});
             return error.ExpectedCommaOrPipe;
         }
@@ -364,7 +401,7 @@ pub fn parseIfStatement(self: *Parser, attributes: []const *ast.Node.Expression)
     // |CAPTURE|
     const capture: ?[]ast.Node.Field = if (self.nextTokenIsKind(.pipe)) try self.parseCapture() else null;
     // {BLOCK} / STATEMENT
-    const then_branch = try self.parseBlockExpression();
+    const then_branch = try self.parseBlockExpression(.{});
     // ELSE
     const else_branch: ?*ast.Node.Expression =
         if (self.currentTokenIsKind(.@"else"))
@@ -372,7 +409,7 @@ pub fn parseIfStatement(self: *Parser, attributes: []const *ast.Node.Expression)
         // else
         try self.consumeKind(.@"else");
         // ELSE
-        break :blk try self.parseBlockExpression();
+        break :blk try self.parseBlockExpression(.{});
     } else null;
     return try self.container.allocStatement(.{
         .location = self.current_token.location,
@@ -398,7 +435,7 @@ pub fn parseWhileStatement(self: *Parser, attributes: []const *ast.Node.Expressi
     // )
     try self.consumeKind(.close_paren);
     // {BLOCK}
-    const body = try self.parseBlockExpression();
+    const body = try self.parseBlockExpression(.{});
     return try self.container.allocStatement(.{
         .location = self.current_token.location,
         .variant = .{ .statement = .{
@@ -423,7 +460,7 @@ pub fn parseForStatement(self: *Parser, attributes: []const *ast.Node.Expression
     // |CAPTURE|
     const capture: ?[]ast.Node.Field = if (self.nextTokenIsKind(.pipe)) try self.parseCapture() else null;
     // {BLOCK}
-    const body = try self.parseBlockExpression();
+    const body = try self.parseBlockExpression(.{});
     return try self.container.allocStatement(.{
         .location = self.current_token.location,
         .variant = .{ .statement = .{
@@ -516,11 +553,23 @@ pub fn parseContinueStatement(self: *Parser, attributes: []const *ast.Node.Expre
     });
 }
 
+pub const StatementDeclarationModifiers = struct {
+    @"pub": bool = false,
+    exported: bool = false,
+};
 pub fn parseDeclaration(self: *Parser, attributes: []const *ast.Node.Expression) ErrorSet!*ast.Node.Statement {
     var lhs = std.ArrayListUnmanaged(ast.Node.Declaration){};
     while (!self.currentTokenIsKind(.equal)) {
-        // @ATTRIBUTES
-        // const attributes = try self.parseAttributes();
+        // pub
+        const is_public = if (self.currentTokenIsKind(.@"pub")) blk: {
+            try self.consumeKind(.@"pub");
+            break :blk true;
+        } else false;
+        // exported
+        const is_exported = if (self.currentTokenIsKind(.@"export")) blk: {
+            try self.consumeKind(.@"export");
+            break :blk true;
+        } else false;
         // mut/let
         if (!self.currentTokenIsKind(.mut) and !self.currentTokenIsKind(.let)) {
             try self.pushErrorHere("expected 'mut' or 'let', got '{}'", .{self.current_token.kind});
@@ -542,6 +591,8 @@ pub fn parseDeclaration(self: *Parser, attributes: []const *ast.Node.Expression)
             .mutable = mutable,
             .identifier = identifier,
             .type = got_type,
+            .exported = is_exported,
+            .public = is_public,
         });
 
         if (!self.currentTokenIsKind(.comma)) {
@@ -567,8 +618,29 @@ pub fn parseDeclaration(self: *Parser, attributes: []const *ast.Node.Expression)
     });
 }
 
+pub fn parseAssignmentStatement(
+    self: *Parser,
+    attributes: []const *ast.Node.Expression,
+    assign_to: *ast.Node.Expression,
+    kind: Lexer.Token.Kind,
+) ErrorSet!*ast.Node.Statement {
+    // EXPRESSION
+    const expression = try self.parseExpression();
+    return try self.container.allocStatement(.{
+        .location = self.current_token.location,
+        .variant = .{ .statement = .{
+            .attributes = attributes,
+            .variant = .{ .assignment = .{
+                .target = assign_to,
+                .value = expression,
+                .kind = kind,
+            } },
+        } },
+    });
+}
+
 pub fn parseExpressionStatement(self: *Parser, attributes: []const *ast.Node.Expression) ErrorSet!*ast.Node.Statement {
-    const expression = try self.parseBlockExpression();
+    const expression = try self.parseExpression();
     return try self.container.allocStatement(.{
         .location = self.current_token.location,
         .variant = .{ .statement = .{
@@ -578,24 +650,62 @@ pub fn parseExpressionStatement(self: *Parser, attributes: []const *ast.Node.Exp
     });
 }
 
-pub fn parseBlockExpression(self: *Parser) ErrorSet!*ast.Node.Expression {
+pub fn parseFunctionExpression(self: *Parser) ErrorSet!*ast.Node.Expression {
+    const function_type = try self.parseType();
+    const body = try self.parseBlockExpression(.{});
+    return try self.container.allocExpression(.{
+        .location = self.current_token.location,
+        .variant = .{ .expression = .{ .function = .{
+            .typ = function_type,
+            .body = body,
+        } } },
+    });
+}
+
+pub fn parseCaptureLambdaExpression(self: *Parser) ErrorSet!*ast.Node.Expression {
+    const capture = try self.parseCapture();
+    const body = try self.parseBlockExpression(.{
+        .only_one_statement = true,
+    });
+    return try self.container.allocExpression(.{
+        .location = self.current_token.location,
+        .variant = .{ .expression = .{ .lambda = .{
+            .capture = capture,
+            .body = body,
+        } } },
+    });
+}
+
+pub const ParseBlockInfo = struct {
+    only_one_statement: bool = false,
+};
+pub fn parseBlockExpression(self: *Parser, info: ParseBlockInfo) ErrorSet!*ast.Node.Expression {
     var statements = std.ArrayListUnmanaged(*ast.Node.Statement){};
+    const only_one_statement = info.only_one_statement;
     // {
     var multiple_statements = false;
     if (self.currentTokenIsKind(.open_brace)) {
+        if (only_one_statement) {
+            try self.pushErrorHere("expected one statement, got start of a block", .{});
+            return error.UnexpectedStatementStart;
+        }
         try self.consumeKind(.open_brace);
         multiple_statements = true;
     }
     while (true) {
-        const statement = try self.parseStatement();
-        try statements.append(self.arena_allocator, statement);
-        if (!multiple_statements or self.currentTokenIsKind(.close_brace)) {
+        // }
+        if (self.currentTokenIsKind(.close_brace)) {
+            try self.consumeKind(.close_brace);
             break;
         }
-    }
-    // }
-    if (multiple_statements) {
-        try self.consumeKind(.close_brace);
+        const statement = try self.parseStatement();
+        if (statement.variant == .assignment) {
+            std.debug.print("assignment {}\n", .{statement.variant.assignment.kind});
+        }
+        try statements.append(self.arena_allocator, statement);
+        if (!multiple_statements) {
+            break;
+        }
     }
     return try self.container.allocExpression(.{
         .location = self.current_token.location,
@@ -705,6 +815,19 @@ pub fn parsePrimaryExpression(self: *Parser) ErrorSet!*ast.Node.Expression {
             try self.consumeKind(self.current_token.kind);
             return got;
         },
+        // types
+        .@"struct", .@"enum" => {
+            const got = try self.parseType();
+            return try self.container.allocExpression(.{ .location = self.current_token.location, .variant = .{ .expression = .{
+                .type = got,
+            } } });
+        },
+        .@"fn" => {
+            return try self.parseFunctionExpression();
+        },
+        .pipe => {
+            return try self.parseCaptureLambdaExpression();
+        },
         else => {
             try self.pushErrorHere("unexpected token '{}'", .{self.current_token.kind});
             return error.UnexpectedToken;
@@ -736,7 +859,7 @@ pub fn parseCallExpression(self: *Parser, expression: *ast.Node.Expression) Erro
     while (!self.currentTokenIsKind(.close_paren)) {
         const argument = try self.parseExpression();
         try arguments.append(self.arena_allocator, argument);
-        if (!self.currentTokenIsKind(.close_paren) or !self.currentTokenIsKind(.comma)) {
+        if (!self.currentTokenIsKind(.close_paren) and !self.currentTokenIsKind(.comma)) {
             try self.pushErrorHere("expected ',' or ')', got '{}'", .{self.current_token.kind});
             return error.ExpectedCommaOrCloseParen;
         }

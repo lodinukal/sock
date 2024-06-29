@@ -78,7 +78,6 @@ pub const Token = struct {
         @"enum",
         @"export",
         @"pub",
-        type,
         @"and",
         @"or",
         mut,
@@ -152,7 +151,6 @@ pub const Token = struct {
                 .@"enum" => "enum",
                 .@"export" => "export",
                 .@"pub" => "pub",
-                .type => "type",
                 .@"and" => "and",
                 .@"or" => "or",
                 .mut => "mut",
@@ -177,7 +175,6 @@ pub const Token = struct {
                 .@"enum",
                 .@"export",
                 .@"pub",
-                .type,
                 .@"and",
                 .@"or",
                 .mut,
@@ -210,6 +207,24 @@ pub const Token = struct {
                 .greater_greater,
                 .@"and",
                 .@"or",
+                => true,
+                else => false,
+            };
+        }
+
+        pub fn isAssignmentOperation(self: Kind) bool {
+            return switch (self) {
+                .plus_equal,
+                .minus_equal,
+                .star_equal,
+                .slash_equal,
+                .slash_slash_equal,
+                .percent_equal,
+                .ampersand_equal,
+                .pipe_equal,
+                .caret_equal,
+                .less_less_equal,
+                .greater_greater_equal,
                 => true,
                 else => false,
             };

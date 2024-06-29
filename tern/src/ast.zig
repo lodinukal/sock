@@ -189,7 +189,14 @@ pub const Node = struct {
             record: *Expression,
             field: []const u8,
         },
-
+        function: struct {
+            typ: *Type,
+            body: *Expression,
+        },
+        lambda: struct {
+            capture: []Field,
+            body: *Expression,
+        },
         block: []const *Statement,
 
         pub fn node(self: *Expression) *Node {
@@ -209,7 +216,8 @@ pub const Node = struct {
         call,
         subscript,
         field,
-
+        function,
+        lambda,
         block,
     };
 
@@ -217,6 +225,8 @@ pub const Node = struct {
         identifier: []const u8,
         type: ?*Type = null,
         mutable: bool = false,
+        public: bool = false,
+        exported: bool = false,
     };
     pub const Statement = struct {
         attributes: []const *Expression,
@@ -248,10 +258,10 @@ pub const Node = struct {
                 declarations: []Declaration,
                 initialiser: *Expression,
             },
-            type_declaration: struct {
-                identifier: []const u8,
-                type: *Type,
-                exported: bool = false,
+            assignment: struct {
+                target: *Expression,
+                value: *Expression,
+                kind: Lexer.Token.Kind,
             },
         },
 
@@ -268,7 +278,7 @@ pub const Node = struct {
         @"break",
         @"continue",
         declaration,
-        type_declaration,
+        assignment,
     };
 
     pub fn getStatementPtr(self: *Node) *Statement {
