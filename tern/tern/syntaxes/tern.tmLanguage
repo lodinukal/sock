@@ -17,7 +17,7 @@
         <!-- Keywords -->
         <dict>
             <key>match</key>
-            <string>\b(fn|if|else|while|for|return|break|continue|struct|enum|export|pub|and|or|mut|let|true|false)\b</string>
+            <string>\b(fn|if|else|while|for|return|break|continue|struct|enum|export|pub|and|or|mut|let|true|false|match)\b</string>
             <key>name</key>
             <string>keyword.control.tern</string>
         </dict>

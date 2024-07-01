@@ -16,6 +16,17 @@
       "console": "externalTerminal"
     },
     {
+      "name": "Tern",
+      "type": "cppvsdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/tern/zig-out/bin/test.exe",
+      "args": [],
+      "stopAtEntry": false,
+      "cwd": "${fileDirname}",
+      "environment": [],
+      "console": "externalTerminal"
+    },
+    {
       "name": "Shader Launch",
       "type": "cppvsdbg",
       "request": "launch",

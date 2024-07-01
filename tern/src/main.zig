@@ -3,7 +3,80 @@ const ast = @import("ast.zig");
 const Lexer = @import("Lexer.zig");
 const Parser = @import("Parser.zig");
 
-pub fn main() !void {}
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var container: ast.Container = undefined;
+    container.init(allocator, allocator);
+    try container.preheat(5000);
+    defer container.deinit();
+    var parser = Parser{
+        .allocator = allocator,
+        .file_path = "tern/src/shader.tn",
+        .buffer = test_source,
+        .container = &container,
+    };
+    try parser.init();
+    defer parser.deinit();
+
+    const start = std.time.nanoTimestamp();
+    while (true) {
+        const stmt: *ast.Statement = parser.parseTopLevel() catch |err| {
+            if (err == error.FinishedParsing) {
+                break;
+            }
+            const ASCII_START_RED = "\x1b[31m";
+            const ASCII_END = "\x1b[0m";
+            for (parser.errors.items) |got| {
+                var temp = std.mem.zeroes([1000]u8);
+                var tall = std.heap.FixedBufferAllocator.init(&temp);
+                const temp_allocator = tall.allocator();
+
+                std.debug.print(ASCII_START_RED ++ "error" ++ ASCII_END ++ ": {s}\n", .{got.message});
+                std.debug.print("--> {}\n", .{got.location});
+
+                const line_as_string = std.fmt.allocPrint(temp_allocator, "{d}", .{got.location.begin.line + 1}) catch unreachable;
+                const pad_amount = line_as_string.len + 2;
+
+                const whole_line = extractTokenLine(test_source, got.location.begin.line) orelse continue;
+                for (0..pad_amount) |_| {
+                    std.debug.print(" ", .{});
+                }
+                std.debug.print("|\n", .{});
+                std.debug.print(" {} | {s}\n", .{ got.location.begin.line + 1, whole_line });
+
+                for (0..pad_amount) |_| {
+                    std.debug.print(" ", .{});
+                }
+                std.debug.print("| ", .{});
+                for (0..got.location.begin.column) |_| {
+                    std.debug.print(" ", .{});
+                }
+                for (got.location.begin.column..got.location.end.column) |_| {
+                    std.debug.print("^", .{});
+                }
+                std.debug.print("\n", .{});
+                for (0..pad_amount) |_| {
+                    std.debug.print(" ", .{});
+                }
+                std.debug.print("|\n", .{});
+            }
+            return err;
+        };
+        if (stmt.variant == .@"if") {
+            recurseExpressionTree(stmt.variant.@"if".condition, 0);
+        }
+    }
+    const end = std.time.nanoTimestamp();
+    _ = start;
+    _ = end;
+
+    // const context = IrGen{};
+    // try context.init(allocator, container);
+    // defer context.deinit();
+}
 
 const test_source = @embedFile("shader.tn");
 
@@ -77,74 +150,4 @@ fn recurseExpressionTree(exp: *ast.Expression, depth: usize) void {
             std.debug.print("other\n", .{});
         },
     }
-}
-
-test {
-    var count = @import("CountingAllocator.zig").init(std.testing.allocator);
-    const allocator = count.allocator();
-
-    var container: ast.Container = undefined;
-    container.init(allocator, allocator);
-    try container.preheat(5000);
-    defer container.deinit();
-    var parser = Parser{
-        .allocator = allocator,
-        .file_path = "tern/src/shader.tn",
-        .buffer = test_source,
-        .container = &container,
-    };
-    try parser.init();
-    defer parser.deinit();
-
-    const start = std.time.nanoTimestamp();
-    while (true) {
-        const stmt: *ast.Statement = parser.parseTopLevel() catch |err| {
-            if (err == error.FinishedParsing) {
-                break;
-            }
-            const ASCII_START_RED = "\x1b[31m";
-            const ASCII_END = "\x1b[0m";
-            for (parser.errors.items) |got| {
-                var temp = std.mem.zeroes([1000]u8);
-                var tall = std.heap.FixedBufferAllocator.init(&temp);
-                const temp_allocator = tall.allocator();
-
-                std.debug.print(ASCII_START_RED ++ "error" ++ ASCII_END ++ ": {s}\n", .{got.message});
-                std.debug.print("--> {}\n", .{got.location});
-
-                const line_as_string = std.fmt.allocPrint(temp_allocator, "{d}", .{got.location.begin.line + 1}) catch unreachable;
-                const pad_amount = line_as_string.len + 2;
-
-                const whole_line = extractTokenLine(test_source, got.location.begin.line) orelse continue;
-                for (0..pad_amount) |_| {
-                    std.debug.print(" ", .{});
-                }
-                std.debug.print("|\n", .{});
-                std.debug.print(" {} | {s}\n", .{ got.location.begin.line + 1, whole_line });
-
-                for (0..pad_amount) |_| {
-                    std.debug.print(" ", .{});
-                }
-                std.debug.print("| ", .{});
-                for (0..got.location.begin.column) |_| {
-                    std.debug.print(" ", .{});
-                }
-                for (got.location.begin.column..got.location.end.column) |_| {
-                    std.debug.print("^", .{});
-                }
-                std.debug.print("\n", .{});
-                for (0..pad_amount) |_| {
-                    std.debug.print(" ", .{});
-                }
-                std.debug.print("|\n", .{});
-            }
-            return err;
-        };
-        if (stmt.variant == .@"if") {
-            recurseExpressionTree(stmt.variant.@"if".condition, 0);
-        }
-    }
-    const end = std.time.nanoTimestamp();
-    _ = start;
-    _ = end;
 }

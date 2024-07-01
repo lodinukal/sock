@@ -29,6 +29,7 @@ pub const Token = struct {
         colon, // :
         dot, // .
         arrow, // ->
+        double_arrow, // =>
         at, // @
 
         // Operators
@@ -64,6 +65,7 @@ pub const Token = struct {
         caret_equal, // ^=
         less_less_equal, // <<=
         greater_greater_equal, // >>=
+        pipeline, // |>
 
         // Keywords
         @"fn",
@@ -76,6 +78,7 @@ pub const Token = struct {
         @"continue",
         @"struct",
         @"enum",
+        match,
         @"export",
         @"pub",
         @"and",
@@ -85,6 +88,7 @@ pub const Token = struct {
         let,
         true,
         false,
+        triple_dash, // ---
 
         pub fn format(self: Kind, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             const value = switch (self) {
@@ -107,6 +111,7 @@ pub const Token = struct {
                 .colon => ":",
                 .dot => ".",
                 .arrow => "->",
+                .double_arrow => "=>",
                 .at => "@",
                 .plus => "+",
                 .minus => "-",
@@ -140,6 +145,8 @@ pub const Token = struct {
                 .caret_equal => "^=",
                 .less_less_equal => "<<=",
                 .greater_greater_equal => ">>=",
+                .pipeline => "|>",
+                .triple_dash => "---",
                 .@"fn" => "fn",
                 .@"if" => "if",
                 .@"else" => "else",
@@ -150,6 +157,7 @@ pub const Token = struct {
                 .@"continue" => "continue",
                 .@"struct" => "struct",
                 .@"enum" => "enum",
+                .match => "match",
                 .@"export" => "export",
                 .@"pub" => "pub",
                 .@"and" => "and",
@@ -175,6 +183,7 @@ pub const Token = struct {
                 .@"continue",
                 .@"struct",
                 .@"enum",
+                .match,
                 .@"export",
                 .@"pub",
                 .@"and",
@@ -184,6 +193,7 @@ pub const Token = struct {
                 .let,
                 .true,
                 .false,
+                .triple_dash,
                 => true,
                 else => false,
             };
@@ -685,6 +695,20 @@ pub fn readNext(self: *Lexer) !Token {
                         .end = self.position(),
                     },
                 };
+            } else if (self.peek(0) == '-') {
+                try self.consume();
+                if (self.peek(0) == '-') {
+                    try self.consume();
+                    return .{
+                        .kind = .triple_dash,
+                        .location = .{
+                            .file = self.file_path,
+                            .begin = start,
+                            .end = self.position(),
+                        },
+                    };
+                }
+                return error.Unexpected;
             } else if (self.peek(0) == '=') {
                 try self.consume();
                 return .{
@@ -831,6 +855,16 @@ pub fn readNext(self: *Lexer) !Token {
                 try self.consume();
                 return .{
                     .kind = .pipe_equal,
+                    .location = .{
+                        .file = self.file_path,
+                        .begin = start,
+                        .end = self.position(),
+                    },
+                };
+            } else if (self.peek(0) == '>') {
+                try self.consume();
+                return .{
+                    .kind = .pipeline,
                     .location = .{
                         .file = self.file_path,
                         .begin = start,
@@ -1012,6 +1046,16 @@ pub fn readNext(self: *Lexer) !Token {
                 try self.consume();
                 return .{
                     .kind = .equal_equal,
+                    .location = .{
+                        .file = self.file_path,
+                        .begin = start,
+                        .end = self.position(),
+                    },
+                };
+            } else if (self.peek(0) == '>') {
+                try self.consume();
+                return .{
+                    .kind = .double_arrow,
                     .location = .{
                         .file = self.file_path,
                         .begin = start,

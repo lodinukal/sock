@@ -100,18 +100,82 @@ pub const Container = struct {
     }
 };
 
-pub const PrimitiveType = enum {
-    i8,
-    i16,
-    i32,
-    i64,
-    u8,
-    u16,
-    u32,
-    u64,
-    f32,
-    f64,
-    bool,
+pub const PrimitiveType = enum(u8) {
+    i8 = 0,
+    i16 = 1,
+    i32 = 2,
+    i64 = 3,
+    u8 = 4,
+    u16 = 5,
+    u32 = 6,
+    u64 = 7,
+    f32 = 8,
+    f64 = 9,
+    bool = 10,
+
+    pub const Kind = enum {
+        signed_integer,
+        unsigned_integer,
+        float,
+        bool,
+    };
+
+    pub inline fn getKind(self: PrimitiveType) Kind {
+        switch (self) {
+            .i8, .i16, .i32, .i64 => return .signed_integer,
+            .u8, .u16, .u32, .u64 => return .unsigned_integer,
+            .f32, .f64 => return .float,
+            .bool => return .bool,
+        }
+    }
+
+    pub inline fn getSize(self: PrimitiveType) u8 {
+        switch (self) {
+            .i8, .u8 => return 8,
+            .i16, .u16 => return 16,
+            .i32, .u32 => return 32,
+            .i64, .u64 => return 64,
+            .f32 => return 32,
+            .f64 => return 64,
+            .bool => return 1,
+        }
+    }
+
+    pub inline fn getCoercionRanking(self: PrimitiveType) u8 {
+        switch (self) {
+            .i8 => return 1,
+            .u8 => return 0,
+            .i16 => return 3,
+            .u16 => return 2,
+            .i32 => return 5,
+            .u32 => return 4,
+            .i64 => return 7,
+            .u64 => return 6,
+            .f32 => return 9,
+            .f64 => return 8,
+            .bool => return 0,
+        }
+    }
+
+    pub fn asSigned(self: PrimitiveType) PrimitiveType {
+        switch (self) {
+            .u8 => return .i8,
+            .u16 => return .i16,
+            .u32 => return .i32,
+            .u64 => return .i64,
+            else => return self,
+        }
+    }
+
+    pub fn asUnsigned(self: PrimitiveType) PrimitiveType {
+        switch (self) {
+            .i8 => return .u8,
+            .i16 => return .u16,
+            .i32 => return .u32,
+            .i64 => return .u64,
+            else => return self,
+        }
+    }
 };
 
 pub const Field = struct {
@@ -132,15 +196,22 @@ pub const Type = union(TypeKind) {
     expression: *Expression,
     unit: void,
     primitive: PrimitiveType,
-    pointer: *Type,
+    optional: *Type,
+    pointer: struct {
+        element: *Type,
+        mutable: bool,
+    },
     array: struct {
         element: *Type,
         length: ?*Expression = null,
     },
-    span: *Type,
+    slice: struct {
+        element: *Type,
+        mutable: bool,
+    },
     function: struct {
         parameters: []Field,
-        return_type: []Field,
+        return_type: ?*Type = null,
     },
 };
 pub const TypeKind = enum {
@@ -149,14 +220,23 @@ pub const TypeKind = enum {
     expression,
     unit,
     primitive,
+    optional,
     pointer,
     array,
-    span,
+    slice,
     function,
+};
+
+pub const MatchCase = struct {
+    location: Location,
+    /// null means it is the else case
+    pattern: ?*Expression = null,
+    body: *Expression,
 };
 
 pub const Expression = struct {
     location: Location,
+    type: ?*Type = null,
     variant: union(ExpressionKind) {
         boolean_literal: bool,
         integer_literal: i128,
@@ -171,32 +251,55 @@ pub const Expression = struct {
             op: Lexer.Token.Kind,
             left: *Expression,
             right: *Expression,
+            // analyse in the type checker
+            result_type: ?*Type = null,
         },
         unary: struct {
             op: Lexer.Token.Kind,
             operand: *Expression,
+            // analyse in the type checker
+            result_type: ?*Type = null,
         },
         call: struct {
             callee: *Expression,
             arguments: []*Expression,
+            // analyse in the type checker
+            result_type: ?*Type = null,
         },
         subscript: struct {
             array: *Expression,
             index: *Expression,
+            // analyse in the type checker
+            result_type: ?*Type = null,
         },
         field: struct {
             record: *Expression,
             field: []const u8,
+            // analyse in the type checker
+            result_type: ?*Type = null,
         },
         function: struct {
             typ: *Type,
-            body: *Expression,
+            /// external functions have no body
+            body: ?*Expression = null,
         },
         lambda: struct {
             capture: []Field,
             body: *Expression,
+            // analyse in the type checker
+            inferred_type: ?*Type = null,
         },
-        block: []const *Statement,
+        block: struct {
+            statements: []const *Statement,
+            // analyse in the type checker
+            result_type: ?*Type = null,
+        },
+        pipeline: struct {
+            stages: []const *Expression,
+            // analyse in the type checker
+            result_type: ?*Type = null,
+        },
+        undefined: void,
     },
 };
 pub const ExpressionKind = enum {
@@ -217,6 +320,8 @@ pub const ExpressionKind = enum {
     function,
     lambda,
     block,
+    pipeline,
+    undefined,
 };
 
 pub const Declaration = struct {
@@ -253,6 +358,10 @@ pub const Statement = struct {
         @"continue": struct {
             label: ?[]const u8,
         },
+        match: struct {
+            expressions: *Expression,
+            cases: []const MatchCase,
+        },
         declaration: struct {
             declarations: []Declaration,
             initialiser: *Expression,
@@ -272,6 +381,7 @@ pub const StatementKind = enum {
     @"return",
     @"break",
     @"continue",
+    match,
     declaration,
     assignment,
 };

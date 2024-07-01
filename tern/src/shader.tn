@@ -12,6 +12,16 @@ let ps_output = struct {
     color: float4,
 }
 
+let func_type = ?*fn(a: f32, b: f32) -> f32
+
+let rhs_fn = fn(a: f32, b: f32) -> f32 {
+    return a + b
+}
+
+let extern_rhs_fn = fn(a: f32, b: f32) -> f32 ---
+
+pub fn externed(a: f32, b: f32) -> f32 ---
+
 @VERTEX
 export fn vs_main(input: vs_input) -> vs_output {
     return .{
@@ -22,6 +32,10 @@ export fn vs_main(input: vs_input) -> vs_output {
 
 @PIXEL
 export fn ps_main(input: vs_output) -> ps_output {
+    let result = input
+        |> extract_position(_)
+        |> splat(_)
+        |> dot(float2(1.0, 1.0), _)
     return .{
         color = float4(input.color, 1.0),
     }

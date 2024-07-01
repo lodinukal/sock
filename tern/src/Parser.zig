@@ -11,6 +11,7 @@ pub const ErrorSet = error{
     ExpectedIdentifier,
     ExpectedIdentifierSameName,
     UnexpectedStatementStart,
+    ExpectedStartOfBlock,
     ExpectedTokenOfKind,
     OutOfMemory,
     InvalidIntegerLiteral,
@@ -41,6 +42,8 @@ errors: std.ArrayListUnmanaged(Error) = undefined,
 warning_count: u32 = 0,
 error_count: u32 = 0,
 container: *ast.Container, // not owned
+
+in_pipeline: bool = false,
 
 pub fn init(
     self: *Parser,
@@ -174,17 +177,36 @@ pub fn parseTopLevel(self: *Parser) ErrorSet!*ast.Statement {
 pub fn parseType(self: *Parser) ErrorSet!*ast.Type {
     switch (self.current_token.kind) {
         .@"struct" => return try self.parseStructType(),
+        .question => {
+            try self.consumeKind(.question);
+            const inner = try self.parseType();
+            return try self.container.allocType(.{ .optional = inner });
+        },
         .star => {
             try self.consumeKind(.star);
+            const mutable = if (self.currentTokenIsKind(.mut)) blk: {
+                try self.consumeKind(.mut);
+                break :blk true;
+            } else false;
             const inner = try self.parseType();
-            return try self.container.allocType(.{ .pointer = inner });
+            return try self.container.allocType(.{ .pointer = .{
+                .element = inner,
+                .mutable = mutable,
+            } });
         },
         .open_bracket => {
             try self.consumeKind(.open_bracket);
             if (self.currentTokenIsKind(.close_bracket)) {
                 try self.consumeKind(.close_bracket);
+                const mutable = if (self.currentTokenIsKind(.mut)) blk: {
+                    try self.consumeKind(.mut);
+                    break :blk true;
+                } else false;
                 const inner = try self.parseType();
-                return try self.container.allocType(.{ .span = inner });
+                return try self.container.allocType(.{ .slice = .{
+                    .element = inner,
+                    .mutable = mutable,
+                } });
             }
             const length = try self.parseExpression();
             try self.consumeKind(.close_bracket);
@@ -225,29 +247,10 @@ pub fn parseFunctionType(self: *Parser) ErrorSet!*ast.Type {
     }, .close_paren);
     try self.consumeKind(.close_paren);
     // TODO: parse modifiers
-    const return_type = if (self.currentTokenIsKind(.arrow)) blk: {
+    const return_type: ?*ast.Type = if (self.currentTokenIsKind(.arrow)) blk: {
         try self.consumeKind(.arrow);
-
-        // tuple or single
-        const is_tuple = self.currentTokenIsKind(.open_paren);
-        if (is_tuple) {
-            try self.consumeKind(.open_paren);
-            const result = try self.parseFieldList(.{
-                .type_requirement = .allow,
-                .value_requirement = .allow,
-                .allow_attributes = true,
-            }, .close_paren);
-            try self.consumeKind(.close_paren);
-            break :blk result;
-        }
-        const result = try self.container.node_allocator.dupe(ast.Field, &.{try self.parseField(.{
-            .type_requirement = .disallow,
-            .value_requirement = .disallow,
-            .allow_attributes = false,
-            .key_type = .expression,
-        })});
-        break :blk result;
-    } else try self.container.node_allocator.alloc(ast.Field, 0);
+        break :blk try self.parseType();
+    } else null;
 
     return try self.container.allocType(.{ .function = .{
         .parameters = parameters,
@@ -364,7 +367,6 @@ pub fn parseStructType(self: *Parser) ErrorSet!*ast.Type {
 pub fn parseStatement(self: *Parser) ErrorSet!*ast.Statement {
     // ATTRIBUTES
     const attributes = try self.tryParseAttributes();
-    const start = self.current_token.location;
     switch (self.current_token.kind) {
         .@"if" => return try self.parseIfStatement(attributes),
         .@"while" => return try self.parseWhileStatement(attributes),
@@ -372,7 +374,8 @@ pub fn parseStatement(self: *Parser) ErrorSet!*ast.Statement {
         .@"return" => return try self.parseReturnStatement(attributes),
         .@"break" => return try self.parseBreakStatement(attributes),
         .@"continue" => return try self.parseContinueStatement(attributes),
-        .mut, .let, .@"pub", .@"export", .@"fn" => return try self.parseDeclaration(attributes, start),
+        .match => return try self.parseMatchStatement(attributes),
+        .mut, .let, .@"pub", .@"export", .@"fn" => return try self.parseDeclaration(attributes),
         else => {
             const expression = try self.parseExpression();
             // peek ahead to check for assignment
@@ -614,11 +617,58 @@ pub fn parseContinueStatement(self: *Parser, attributes: []const *ast.Expression
     });
 }
 
+pub fn parseMatchStatement(self: *Parser, attributes: []const *ast.Expression) ErrorSet!*ast.Statement {
+    const start = self.current_token.location;
+    // match
+    try self.consumeKind(.match);
+    // (
+    try self.consumeKind(.open_paren);
+    // EXPRESSION
+    const expression = try self.parseExpression();
+    // )
+    try self.consumeKind(.close_paren);
+    // {
+    try self.consumeKind(.open_brace);
+    // CASES
+    var cases = std.ArrayListUnmanaged(ast.MatchCase){};
+    while (!self.currentTokenIsKind(.close_brace)) {
+        const location = self.current_token.location;
+        // PATTERN/else
+        const pattern: ?*ast.Expression = if (self.currentTokenIsKind(.@"else")) blk: {
+            try self.consumeKind(.@"else");
+            break :blk null;
+        } else try self.parseExpression();
+        // =>
+        try self.consumeKind(.double_arrow);
+        // BODY
+        const body = try self.parseBlockExpression(.{});
+        try cases.append(self.container.node_allocator, .{
+            .location = location,
+            .pattern = pattern,
+            .body = body,
+        });
+        if (!self.currentTokenIsKind(.close_brace)) {
+            try self.consumeKind(.comma);
+        }
+    }
+    // }
+    try self.consumeKind(.close_brace);
+    return try self.container.allocStatement(.{
+        .location = start,
+        .attributes = attributes,
+        .variant = .{ .match = .{
+            .expressions = expression,
+            .cases = cases.items,
+        } },
+    });
+}
+
 pub const StatementDeclarationModifiers = struct {
     @"pub": bool = false,
     exported: bool = false,
 };
-pub fn parseDeclaration(self: *Parser, attributes: []const *ast.Expression, start: ast.Location) ErrorSet!*ast.Statement {
+pub fn parseDeclaration(self: *Parser, attributes: []const *ast.Expression) ErrorSet!*ast.Statement {
+    const start = self.current_token.location;
     var lhs = std.ArrayListUnmanaged(ast.Declaration){};
     // pub
     const is_public = if (self.currentTokenIsKind(.@"pub")) blk: {
@@ -727,7 +777,23 @@ pub fn parseFunctionExpression(self: *Parser, keyword_consumed: bool) ErrorSet!*
     const start = self.current_token.location;
     const function_type = if (keyword_consumed) try self.parseFunctionType() else try self.parseType();
 
-    const body = try self.parseBlockExpression(.{});
+    // if there is no open brace, then its a function type
+    if (!self.currentTokenIsKind(.open_brace) and !self.currentTokenIsKind(.triple_dash)) {
+        return try self.container.allocExpression(.{
+            .location = start,
+            .variant = .{ .type = function_type },
+        });
+    }
+
+    const body = if (self.currentTokenIsKind(.triple_dash)) blk: {
+        try self.consumeKind(.triple_dash);
+        break :blk null;
+    } else try self.parseBlockExpression(.{
+        .statement_requirement = .multiple,
+    });
+
+    std.debug.print("body: {?}\n", .{body});
+
     return try self.container.allocExpression(.{
         .location = start,
         .variant = .{ .function = .{
@@ -741,7 +807,7 @@ pub fn parseCaptureLambdaExpression(self: *Parser) ErrorSet!*ast.Expression {
     const start = self.current_token.location;
     const capture = try self.parseCapture();
     const body = try self.parseBlockExpression(.{
-        .only_one_statement = true,
+        .statement_requirement = .one,
     });
     return try self.container.allocExpression(.{
         .location = start,
@@ -753,21 +819,24 @@ pub fn parseCaptureLambdaExpression(self: *Parser) ErrorSet!*ast.Expression {
 }
 
 pub const ParseBlockInfo = struct {
-    only_one_statement: bool = false,
+    statement_requirement: enum { one, any, multiple } = .any,
 };
 pub fn parseBlockExpression(self: *Parser, info: ParseBlockInfo) ErrorSet!*ast.Expression {
     const start = self.current_token.location;
     var statements = std.ArrayListUnmanaged(*ast.Statement){};
-    const only_one_statement = info.only_one_statement;
+    const statement_requirement = info.statement_requirement;
     // {
     var multiple_statements = false;
     if (self.currentTokenIsKind(.open_brace)) {
-        if (only_one_statement) {
+        if (statement_requirement == .one) {
             try self.pushErrorHere("expected one statement, got start of a block", .{});
             return error.UnexpectedStatementStart;
         }
         try self.consumeKind(.open_brace);
         multiple_statements = true;
+    } else if (statement_requirement == .multiple) {
+        try self.pushErrorHere("expected start of block, got '{}'", .{self.current_token.kind});
+        return error.ExpectedStartOfBlock;
     }
     while (true) {
         // }
@@ -784,7 +853,9 @@ pub fn parseBlockExpression(self: *Parser, info: ParseBlockInfo) ErrorSet!*ast.E
     return try self.container.allocExpression(.{
         .location = start,
         .variant = .{
-            .block = statements.items,
+            .block = .{
+                .statements = statements.items,
+            },
         },
     });
 }
@@ -848,6 +919,10 @@ pub fn parsePrimaryExpression(self: *Parser, turn_to_block: bool) ErrorSet!*ast.
         .identifier => {
             return try self.parseIdentifierExpression();
         },
+        .triple_dash => {
+            try self.consumeKind(.triple_dash);
+            return try self.container.allocExpression(.{ .location = start, .variant = .undefined });
+        },
         .integer => {
             const got = try self.container.allocExpression(.{ .location = start, .variant = .{
                 .integer_literal = std.fmt.parseInt(i128, self.current_token.data, 0) catch {
@@ -896,7 +971,12 @@ pub fn parsePrimaryExpression(self: *Parser, turn_to_block: bool) ErrorSet!*ast.
             return got;
         },
         // types
-        .@"struct", .@"enum" => {
+        .@"struct",
+        .@"enum",
+        .question,
+        .star,
+        .open_bracket,
+        => {
             const got = try self.parseType();
             return try self.container.allocExpression(.{ .location = start, .variant = .{
                 .type = got,
@@ -964,12 +1044,7 @@ pub fn parseIdentifierExpression(self: *Parser) ErrorSet!*ast.Expression {
         .identifier = identifier,
     } });
 
-    switch (self.current_token.kind) {
-        .open_paren => return try self.parseCallExpression(expr),
-        .open_bracket => return try self.parseSubscriptExpression(expr),
-        .dot => return try self.parseSelectorExpression(expr),
-        else => return expr,
-    }
+    return try self.parseExpressionChain(expr);
 }
 
 pub fn parseCallExpression(self: *Parser, expression: *ast.Expression) ErrorSet!*ast.Expression {
@@ -996,12 +1071,7 @@ pub fn parseCallExpression(self: *Parser, expression: *ast.Expression) ErrorSet!
         },
     } });
 
-    switch (self.current_token.kind) {
-        .open_paren => return try self.parseCallExpression(expr),
-        .open_bracket => return try self.parseSubscriptExpression(expr),
-        .dot => return try self.parseSelectorExpression(expr),
-        else => return expr,
-    }
+    return try self.parseExpressionChain(expr);
 }
 
 pub fn parseSubscriptExpression(self: *Parser, expression: *ast.Expression) ErrorSet!*ast.Expression {
@@ -1017,12 +1087,7 @@ pub fn parseSubscriptExpression(self: *Parser, expression: *ast.Expression) Erro
         },
     } });
 
-    switch (self.current_token.kind) {
-        .open_paren => return try self.parseCallExpression(expr),
-        .open_bracket => return try self.parseSubscriptExpression(expr),
-        .dot => return try self.parseSelectorExpression(expr),
-        else => return expr,
-    }
+    return try self.parseExpressionChain(expr);
 }
 
 pub fn parseSelectorExpression(self: *Parser, expression: *ast.Expression) ErrorSet!*ast.Expression {
@@ -1038,10 +1103,45 @@ pub fn parseSelectorExpression(self: *Parser, expression: *ast.Expression) Error
         },
     } });
 
+    return try self.parseExpressionChain(expr);
+}
+
+pub fn parsePipelineExpression(self: *Parser, expression: *ast.Expression) ErrorSet!*ast.Expression {
+    self.in_pipeline = true;
+    defer self.in_pipeline = false;
+    const start = self.current_token.location;
+    // |>
+    try self.consumeKind(.pipeline);
+    var stages = try std.ArrayListUnmanaged(*ast.Expression).initCapacity(self.container.node_allocator, 2);
+    try stages.append(self.container.node_allocator, expression);
+
+    while (true) {
+        const stage = try self.parseExpression();
+        try stages.append(self.container.node_allocator, stage);
+        std.debug.print("stage: {}\n", .{stage.variant.call.callee.location});
+        if (!self.currentTokenIsKind(.pipeline)) {
+            break;
+        }
+        try self.consumeKind(.pipeline);
+    }
+
+    const expr = try self.container.allocExpression(.{ .location = start, .variant = .{ .pipeline = .{
+        .stages = stages.items,
+    } } });
+
+    return try self.parseExpressionChain(expr);
+}
+
+pub fn parseExpressionChain(self: *Parser, inner_expression: *ast.Expression) ErrorSet!*ast.Expression {
     switch (self.current_token.kind) {
-        .open_paren => return try self.parseCallExpression(expr),
-        .open_bracket => return try self.parseSubscriptExpression(expr),
-        .dot => return try self.parseSelectorExpression(expr),
-        else => return expr,
+        .open_paren => return try self.parseCallExpression(inner_expression),
+        .open_bracket => return try self.parseSubscriptExpression(inner_expression),
+        .dot => return try self.parseSelectorExpression(inner_expression),
+        else => {
+            if (!self.in_pipeline and self.currentTokenIsKind(.pipeline)) {
+                return try self.parsePipelineExpression(inner_expression);
+            }
+            return inner_expression;
+        },
     }
 }
