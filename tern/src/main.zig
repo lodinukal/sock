@@ -2,6 +2,7 @@ const std = @import("std");
 const ast = @import("ast.zig");
 const Lexer = @import("Lexer.zig");
 const Parser = @import("Parser.zig");
+const IrGen = @import("IrGen.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -10,7 +11,6 @@ pub fn main() !void {
 
     var container: ast.Container = undefined;
     container.init(allocator, allocator);
-    try container.preheat(5000);
     defer container.deinit();
     var parser = Parser{
         .allocator = allocator,
@@ -21,7 +21,7 @@ pub fn main() !void {
     try parser.init();
     defer parser.deinit();
 
-    const start = std.time.nanoTimestamp();
+    const start_parse = std.time.nanoTimestamp();
     while (true) {
         const stmt: *ast.Statement = parser.parseTopLevel() catch |err| {
             if (err == error.FinishedParsing) {
@@ -69,13 +69,26 @@ pub fn main() !void {
             recurseExpressionTree(stmt.variant.@"if".condition, 0);
         }
     }
-    const end = std.time.nanoTimestamp();
-    _ = start;
-    _ = end;
+    const end_parse = std.time.nanoTimestamp();
 
-    // const context = IrGen{};
-    // try context.init(allocator, container);
-    // defer context.deinit();
+    std.debug.print("Parsed successfully\n", .{});
+
+    var gen = IrGen{};
+    try gen.init(allocator);
+    defer gen.deinit();
+
+    const start_gen = std.time.nanoTimestamp();
+    for (0..8) |i| {
+        std.mem.doNotOptimizeAway(try gen.analyseStatement(container.root_stmts.items[i]));
+    }
+    const end_gen = std.time.nanoTimestamp();
+
+    const flattened = try gen.module.interner.flatten(allocator);
+    defer allocator.free(flattened.data);
+
+    std.debug.print("{}\n", .{gen.module});
+    std.debug.print("Parse time: {d}ns\n", .{end_parse - start_parse});
+    std.debug.print("Gen time: {d}ns\n", .{end_gen - start_gen});
 }
 
 const test_source = @embedFile("shader.tn");

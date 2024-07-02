@@ -22,6 +22,36 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // const tracy = b.dependency("tracy", .{});
+    // const tracy_lib = b.addStaticLibrary(.{
+    //     .name = "tracy_lib",
+    //     .optimize = optimize,
+    //     .target = target,
+    //     .root_source_file = null,
+    // });
+    // tracy_lib.addCSourceFile(.{
+    //     .file = tracy.path("public/TracyClient.cpp"),
+    //     .flags = &.{
+    //         "-DTRACY_ENABLE",
+    //         "-fno-sanitize=undefined",
+    //         "--std=c++17",
+    //     },
+    // });
+    // tracy_lib.linkLibC();
+    // tracy_lib.linkLibCpp();
+    // tracy_lib.addIncludePath(tracy.path("public"));
+    // if (tracy_lib.rootModuleTarget().os.tag == .windows) {
+    //     tracy_lib.linkSystemLibrary("Advapi32");
+    //     tracy_lib.linkSystemLibrary("User32");
+    //     tracy_lib.linkSystemLibrary("Ws2_32");
+    //     tracy_lib.linkSystemLibrary("DbgHelp");
+    // }
+
+    // exe.addIncludePath(tracy.path("public"));
+    // exe.addIncludePath(tracy.path("public/tracy"));
+    // exe.linkLibC();
+    // exe.linkLibrary(tracy_lib);
+
     var extra_volk_flags = std.ArrayList([]const u8).init(b.allocator);
     defer extra_volk_flags.deinit();
 

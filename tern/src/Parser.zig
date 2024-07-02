@@ -3,6 +3,7 @@ const Lexer = @import("Lexer.zig");
 const ast = @import("ast.zig");
 
 pub const ErrorSet = error{
+    Nothing,
     Unexpected,
     UnexpectedToken,
     ExpectedMutOrLet,
@@ -176,7 +177,7 @@ pub fn parseTopLevel(self: *Parser) ErrorSet!*ast.Statement {
 
 pub fn parseType(self: *Parser) ErrorSet!*ast.Type {
     switch (self.current_token.kind) {
-        .@"struct" => return try self.parseStructType(),
+        .structure => return try self.parseStructType(),
         .question => {
             try self.consumeKind(.question);
             const inner = try self.parseType();
@@ -208,7 +209,10 @@ pub fn parseType(self: *Parser) ErrorSet!*ast.Type {
                     .mutable = mutable,
                 } });
             }
-            const length = try self.parseExpression();
+            const length = if (self.currentTokenIsKind(.identifier) and std.mem.eql(u8, "_", self.current_token.data)) blk: {
+                try self.consumeKind(.identifier);
+                break :blk null;
+            } else try self.parseExpression();
             try self.consumeKind(.close_bracket);
             const inner = try self.parseType();
             return try self.container.allocType(.{ .array = .{
@@ -329,7 +333,7 @@ pub fn parseField(self: *Parser, info: FieldParseInfo) ErrorSet!ast.Field {
     return .{
         .attributes = attributes,
         .key = key,
-        .type = got_type,
+        .typ = got_type,
         .initialiser = got_default,
     };
 }
@@ -348,7 +352,7 @@ pub fn parseFieldList(self: *Parser, info: FieldParseInfo, closer: Lexer.Token.K
 
 pub fn parseStructType(self: *Parser) ErrorSet!*ast.Type {
     // struct
-    try self.consumeKind(.@"struct");
+    try self.consumeKind(.structure);
     // {
     try self.consumeKind(.open_brace);
     // FIELDS
@@ -359,7 +363,7 @@ pub fn parseStructType(self: *Parser) ErrorSet!*ast.Type {
     }, .close_brace);
     // }
     try self.consumeKind(.close_brace);
-    return try self.container.allocType(.{ .@"struct" = .{
+    return try self.container.allocType(.{ .structure = .{
         .fields = fields,
     } });
 }
@@ -396,49 +400,6 @@ pub fn parseStatement(self: *Parser) ErrorSet!*ast.Statement {
         },
     }
 }
-
-// pub fn parseFunctionStatement(self: *Parser, attributes: []const *ast.Expression) ErrorSet!*ast.Statement {
-//     const start = self.current_token.location;
-
-//     // pub
-//     const is_public = if (self.currentTokenIsKind(.@"pub")) blk: {
-//         try self.consumeKind(.@"pub");
-//         break :blk true;
-//     } else false;
-//     // exported
-//     const is_exported = if (self.currentTokenIsKind(.@"export")) blk: {
-//         try self.consumeKind(.@"export");
-//         break :blk true;
-//     } else false;
-
-//     try self.consumeKind(.@"fn");
-//     try self.expectCurrentTokenIsKind(.identifier);
-//     const identifier = self.current_token.data;
-//     try self.consumeKind(.identifier);
-
-//     const function_type = try self.parseFunctionType();
-//     const body = try self.parseBlockExpression(.{});
-//     const declaration = try self.container.node_allocator.alloc(ast.Declaration, 1);
-//     declaration[0] = .{
-//         .identifier = identifier,
-//         .public = is_public,
-//         .exported = is_exported,
-//     };
-//     return try self.container.allocStatement(.{
-//         .location = start,
-//         .attributes = attributes,
-//         .variant = .{ .declaration = .{
-//             .declarations = declaration,
-//             .initialiser = try self.container.allocExpression(.{
-//                 .location = start,
-//                 .variant = .{ .function = .{
-//                     .typ = function_type,
-//                     .body = body,
-//                 } },
-//             }),
-//         } },
-//     });
-// }
 
 pub fn parseCapture(self: *Parser) ErrorSet![]ast.Field {
     // |
@@ -669,7 +630,6 @@ pub const StatementDeclarationModifiers = struct {
 };
 pub fn parseDeclaration(self: *Parser, attributes: []const *ast.Expression) ErrorSet!*ast.Statement {
     const start = self.current_token.location;
-    var lhs = std.ArrayListUnmanaged(ast.Declaration){};
     // pub
     const is_public = if (self.currentTokenIsKind(.@"pub")) blk: {
         try self.consumeKind(.@"pub");
@@ -681,51 +641,38 @@ pub fn parseDeclaration(self: *Parser, attributes: []const *ast.Expression) Erro
         break :blk true;
     } else false;
 
+    var decl: ast.Declaration = .{
+        .identifier = undefined,
+        .exported = is_exported,
+        .public = is_public,
+        .mutable = false,
+        .initialiser = undefined,
+    };
+
     const is_function_declaraction = self.currentTokenIsKind(.@"fn");
     if (is_function_declaraction) {
         try self.consumeKind(.@"fn");
         try self.expectCurrentTokenIsKind(.identifier);
-        const identifier = self.current_token.data;
+        decl.identifier = self.current_token.data;
         try self.consumeKind(.identifier);
-
-        try lhs.append(self.container.node_allocator, .{
-            .mutable = false,
-            .identifier = identifier,
-            .exported = is_exported,
-            .public = is_public,
-        });
     } else {
-        while (!self.currentTokenIsKind(.equal)) {
-            // mut/let
-            if (!self.currentTokenIsKind(.mut) and !self.currentTokenIsKind(.let)) {
-                try self.pushErrorHere("expected 'mut' or 'let', got '{}'", .{self.current_token.kind});
-                return error.ExpectedMutOrLet;
-            }
-            const mutable = self.currentTokenIsKind(.mut);
-            try self.consumeKind(if (mutable) .mut else .let);
-            // IDENTIFIER
-            try self.expectCurrentTokenIsKind(.identifier);
-            const identifier = self.current_token.data;
-            try self.consumeKind(.identifier);
-            // :
-            const got_type = if (self.currentTokenIsKind(.colon)) blk: {
-                try self.consumeKind(.colon);
-                break :blk try self.parseType();
-            } else null;
-
-            try lhs.append(self.container.node_allocator, .{
-                .mutable = mutable,
-                .identifier = identifier,
-                .type = got_type,
-                .exported = is_exported,
-                .public = is_public,
-            });
-
-            if (!self.currentTokenIsKind(.comma)) {
-                break;
-            }
-            try self.consumeKind(.comma);
+        // mut/let
+        if (!self.currentTokenIsKind(.mut) and !self.currentTokenIsKind(.let)) {
+            try self.pushErrorHere("expected 'mut' or 'let', got '{}'", .{self.current_token.kind});
+            return error.ExpectedMutOrLet;
         }
+        const mutable = self.currentTokenIsKind(.mut);
+        try self.consumeKind(if (mutable) .mut else .let);
+        decl.mutable = mutable;
+        // IDENTIFIER
+        try self.expectCurrentTokenIsKind(.identifier);
+        decl.identifier = self.current_token.data;
+        try self.consumeKind(.identifier);
+        // :
+        decl.typ = if (self.currentTokenIsKind(.colon)) blk: {
+            try self.consumeKind(.colon);
+            break :blk try self.parseType();
+        } else null;
 
         // =
         try self.expectCurrentTokenIsKind(.equal);
@@ -733,14 +680,11 @@ pub fn parseDeclaration(self: *Parser, attributes: []const *ast.Expression) Erro
     }
 
     // EXPRESSION
-    const got_initialiser = if (is_function_declaraction) try self.parseFunctionExpression(true) else try self.parseExpression();
+    decl.initialiser = if (is_function_declaraction) try self.parseFunctionExpression(true) else try self.parseExpression();
     return try self.container.allocStatement(.{
         .location = start,
         .attributes = attributes,
-        .variant = .{ .declaration = .{
-            .declarations = lhs.items,
-            .initialiser = got_initialiser,
-        } },
+        .variant = .{ .declaration = decl },
     });
 }
 
@@ -781,7 +725,7 @@ pub fn parseFunctionExpression(self: *Parser, keyword_consumed: bool) ErrorSet!*
     if (!self.currentTokenIsKind(.open_brace) and !self.currentTokenIsKind(.triple_dash)) {
         return try self.container.allocExpression(.{
             .location = start,
-            .variant = .{ .type = function_type },
+            .variant = .{ .typ = function_type },
         });
     }
 
@@ -791,8 +735,6 @@ pub fn parseFunctionExpression(self: *Parser, keyword_consumed: bool) ErrorSet!*
     } else try self.parseBlockExpression(.{
         .statement_requirement = .multiple,
     });
-
-    std.debug.print("body: {?}\n", .{body});
 
     return try self.container.allocExpression(.{
         .location = start,
@@ -923,14 +865,24 @@ pub fn parsePrimaryExpression(self: *Parser, turn_to_block: bool) ErrorSet!*ast.
             try self.consumeKind(.triple_dash);
             return try self.container.allocExpression(.{ .location = start, .variant = .undefined });
         },
+        .nil => {
+            try self.consumeKind(.nil);
+            return try self.container.allocExpression(.{ .location = start, .variant = .nil });
+        },
         .integer => {
+            const integer = std.fmt.parseInt(i128, self.current_token.data, 0) catch {
+                try self.pushErrorHere(
+                    "invalid integer literal '{s}'",
+                    .{self.current_token.data},
+                );
+                return error.InvalidIntegerLiteral;
+            };
+            const signed = integer < 0;
+            const abs: u64 = @intCast(if (signed) -integer else integer);
             const got = try self.container.allocExpression(.{ .location = start, .variant = .{
-                .integer_literal = std.fmt.parseInt(i128, self.current_token.data, 0) catch {
-                    try self.pushErrorHere(
-                        "invalid integer literal '{s}'",
-                        .{self.current_token.data},
-                    );
-                    return error.InvalidIntegerLiteral;
+                .integer_literal = .{
+                    .signed = signed,
+                    .value = abs,
                 },
             } });
             try self.consumeKind(.integer);
@@ -971,15 +923,15 @@ pub fn parsePrimaryExpression(self: *Parser, turn_to_block: bool) ErrorSet!*ast.
             return got;
         },
         // types
-        .@"struct",
-        .@"enum",
+        .structure,
+        .enumeration,
         .question,
         .star,
         .open_bracket,
         => {
             const got = try self.parseType();
             return try self.container.allocExpression(.{ .location = start, .variant = .{
-                .type = got,
+                .typ = got,
             } });
         },
         .@"fn" => {
@@ -1118,7 +1070,6 @@ pub fn parsePipelineExpression(self: *Parser, expression: *ast.Expression) Error
     while (true) {
         const stage = try self.parseExpression();
         try stages.append(self.container.node_allocator, stage);
-        std.debug.print("stage: {}\n", .{stage.variant.call.callee.location});
         if (!self.currentTokenIsKind(.pipeline)) {
             break;
         }

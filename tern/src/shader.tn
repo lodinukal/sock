@@ -1,3 +1,8 @@
+let float3 = [3]f32
+let float4 = [4]f32
+let leto = f32
+let m: leto = 1.0
+
 let vs_input = struct {
     position: float3,
     color: float3,

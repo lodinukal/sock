@@ -26,6 +26,10 @@
         .machdxcompiler = .{
             .path = "mach-dxcompiler",
         },
+        .tracy = .{
+            .url = "git+https://github.com/wolfpld/tracy#2971db21e33e168b9ed2665564db93957035c4ca",
+            .hash = "1220a4917fd8c7c856e02414518dd8eabece17a138c01d4e946ae03bc9d5e60d15a8",
+        },
     },
     .paths = .{
         // This makes *all* files, recursively, included in this package. It is generally

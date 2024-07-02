@@ -68,11 +68,6 @@ pub const Container = struct {
         try self.root_stmts.append(self.allocator, node);
     }
 
-    pub fn preheat(self: *Container, size: usize) !void {
-        self.node_allocator.free(try self.node_allocator.alloc(u8, size));
-        _ = self.node_arena.reset(.free_all);
-    }
-
     pub fn allocExpression(self: *Container, expression: Expression) !*Expression {
         self.expressions += 1;
         const got = try self.node_allocator.create(Expression);
@@ -181,16 +176,15 @@ pub const PrimitiveType = enum(u8) {
 pub const Field = struct {
     attributes: []const *Expression,
     key: *Expression,
-    type: ?*Type = null,
+    typ: ?*Type = null,
     initialiser: ?*Expression = null,
 };
 
 pub const Type = union(TypeKind) {
-    @"struct": struct {
+    structure: struct {
         fields: []Field,
     },
-    @"enum": struct {
-        backing_type: ?*Type = null,
+    enumeration: struct {
         fields: []Field,
     },
     expression: *Expression,
@@ -215,8 +209,8 @@ pub const Type = union(TypeKind) {
     },
 };
 pub const TypeKind = enum {
-    @"struct",
-    @"enum",
+    structure,
+    enumeration,
     expression,
     unit,
     primitive,
@@ -236,16 +230,19 @@ pub const MatchCase = struct {
 
 pub const Expression = struct {
     location: Location,
-    type: ?*Type = null,
+    typ: ?*Type = null,
     variant: union(ExpressionKind) {
         boolean_literal: bool,
-        integer_literal: i128,
+        integer_literal: struct {
+            value: u64,
+            signed: bool,
+        },
         float_literal: f64,
         string_literal: []const u8,
         enum_literal: []const u8,
         char_literal: u32,
         structure_literal: []Field,
-        type: *Type,
+        typ: *Type,
         identifier: []const u8,
         binary: struct {
             op: Lexer.Token.Kind,
@@ -300,6 +297,7 @@ pub const Expression = struct {
             result_type: ?*Type = null,
         },
         undefined: void,
+        nil: void,
     },
 };
 pub const ExpressionKind = enum {
@@ -310,7 +308,7 @@ pub const ExpressionKind = enum {
     enum_literal,
     char_literal,
     structure_literal,
-    type,
+    typ,
     identifier,
     binary,
     unary,
@@ -322,15 +320,18 @@ pub const ExpressionKind = enum {
     block,
     pipeline,
     undefined,
+    nil,
 };
 
 pub const Declaration = struct {
-    identifier: []const u8,
-    type: ?*Type = null,
-    mutable: bool = false,
     public: bool = false,
     exported: bool = false,
+    mutable: bool = false,
+    identifier: []const u8,
+    typ: ?*Type = null,
+    initialiser: *Expression,
 };
+
 pub const Statement = struct {
     location: Location,
     attributes: []const *Expression,
@@ -362,10 +363,7 @@ pub const Statement = struct {
             expressions: *Expression,
             cases: []const MatchCase,
         },
-        declaration: struct {
-            declarations: []Declaration,
-            initialiser: *Expression,
-        },
+        declaration: Declaration,
         assignment: struct {
             target: *Expression,
             value: *Expression,

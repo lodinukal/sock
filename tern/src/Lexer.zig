@@ -76,8 +76,8 @@ pub const Token = struct {
         @"return",
         @"break",
         @"continue",
-        @"struct",
-        @"enum",
+        structure,
+        enumeration,
         match,
         @"export",
         @"pub",
@@ -88,6 +88,7 @@ pub const Token = struct {
         let,
         true,
         false,
+        nil,
         triple_dash, // ---
 
         pub fn format(self: Kind, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
@@ -155,8 +156,8 @@ pub const Token = struct {
                 .@"return" => "return",
                 .@"break" => "break",
                 .@"continue" => "continue",
-                .@"struct" => "struct",
-                .@"enum" => "enum",
+                .structure => "struct",
+                .enumeration => "enum",
                 .match => "match",
                 .@"export" => "export",
                 .@"pub" => "pub",
@@ -167,6 +168,7 @@ pub const Token = struct {
                 .let => "let",
                 .true => "true",
                 .false => "false",
+                .nil => "nil",
             };
             try writer.writeAll(value);
         }
@@ -181,8 +183,8 @@ pub const Token = struct {
                 .@"return",
                 .@"break",
                 .@"continue",
-                .@"struct",
-                .@"enum",
+                .structure,
+                .enumeration,
                 .match,
                 .@"export",
                 .@"pub",
@@ -194,6 +196,7 @@ pub const Token = struct {
                 .true,
                 .false,
                 .triple_dash,
+                .nil,
                 => true,
                 else => false,
             };
@@ -290,6 +293,15 @@ pub const Token = struct {
 };
 
 pub fn stringAsKeyword(str: []const u8) ?Token.Kind {
+    const override = .{
+        .{ "struct", .structure },
+        .{ "enum", .enumeration },
+    };
+    inline for (override) |set| {
+        if (std.mem.eql(u8, str, set.@"0")) {
+            return set.@"1";
+        }
+    }
     const as_kind = std.meta.stringToEnum(Token.Kind, str) orelse return null;
     return if (as_kind.isKeyword()) as_kind else null;
 }
@@ -312,11 +324,18 @@ pub fn init(buffer: []const u8, file_path: []const u8) Lexer {
 pub fn deinit(_: *Lexer) void {}
 
 pub fn next(self: *Lexer) !Token {
-    while (std.ascii.isWhitespace(self.peek(0)))
-        self.consumeAny();
-    self.previous_location = self.token.location;
-    self.token = try self.readNext();
-
+    while (true) {
+        while (std.ascii.isWhitespace(self.peek(0)))
+            self.consumeAny();
+        self.previous_location = self.token.location;
+        self.token = self.readNext() catch |err| {
+            if (err == error.Nothing) {
+                continue;
+            }
+            return err;
+        };
+        break;
+    }
     return self.token;
 }
 
@@ -1085,10 +1104,15 @@ pub fn readNext(self: *Lexer) !Token {
             };
         },
         '"', '\'', '`' => return try self.readStringOrCharacterLiteral(),
+        ';' => {
+            try self.consume();
+            return error.Nothing;
+        },
         else => {
-            if (std.ascii.isDigit(self.peek(0))) {
+            const peeked = self.peek(0);
+            if (std.ascii.isDigit(peeked)) {
                 return try self.readNumber(start, self.offset);
-            } else if (std.ascii.isAlphabetic(self.peek(0)) or self.peek(0) == '_') {
+            } else if (std.ascii.isAlphabetic(peeked) or peeked == '_') {
                 const name = try self.readIdentifier();
                 if (stringAsKeyword(name)) |keyword| {
                     return .{
