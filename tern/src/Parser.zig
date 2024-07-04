@@ -1,6 +1,7 @@
 const std = @import("std");
 const Lexer = @import("Lexer.zig");
 const ast = @import("ast.zig");
+const Reporter = @import("Reporter.zig");
 
 pub const ErrorSet = error{
     Nothing,
@@ -39,9 +40,7 @@ file_path: []const u8,
 lexer: Lexer = undefined,
 current_token: Lexer.Token = .{},
 next_token: Lexer.Token = .{},
-errors: std.ArrayListUnmanaged(Error) = undefined,
-warning_count: u32 = 0,
-error_count: u32 = 0,
+reporter: ?*Reporter = null,
 container: *ast.Container, // not owned
 
 in_pipeline: bool = false,
@@ -52,7 +51,6 @@ pub fn init(
     self.arena = std.heap.ArenaAllocator.init(self.allocator);
     self.arena_allocator = self.arena.allocator();
     self.lexer = Lexer.init(self.buffer, self.file_path);
-    self.errors = std.ArrayListUnmanaged(Error){};
     try self.advance();
     try self.advance();
 }
@@ -61,35 +59,10 @@ pub fn deinit(self: *Parser) void {
     self.arena.deinit();
 }
 
-// pub fn next(self: *Parser) ErrorSet!Lexer.Token {
-//     // const decl = try self.parseDeclaration(.{});
-//     // return decl;
-//     return self.lexer.next();
-// }
-
-pub fn pushError(self: *Parser, location: ast.Location, comptime fmt: []const u8, args: anytype) ErrorSet!void {
-    try self.errors.append(self.arena_allocator, .{
-        .location = location,
-        .message = try std.fmt.allocPrint(self.arena_allocator, fmt, args),
-        .fatal = true,
-    });
-    self.error_count += 1;
-}
-
 pub fn pushErrorHere(self: *Parser, comptime fmt: []const u8, args: anytype) ErrorSet!void {
-    try self.pushError(self.lexer.previous_location, fmt, args);
-}
-
-pub fn pushWarning(self: *Parser, location: ast.Location, comptime fmt: []const u8, args: anytype) ErrorSet!void {
-    try self.errors.append(self.arena_allocator, .{
-        .location = location,
-        .message = try std.fmt.allocPrint(self.arena_allocator, fmt, args),
-    });
-    self.warning_count += 1;
-}
-
-pub fn pushWarningHere(self: *Parser, comptime fmt: []const u8, args: anytype) ErrorSet!void {
-    try self.pushWarning(self.lexer.previous_location, fmt, args);
+    if (self.reporter) |reporter| {
+        try reporter.push(.err, self.lexer.previous_location, fmt, args);
+    }
 }
 
 pub fn advance(self: *Parser) ErrorSet!void {
@@ -244,11 +217,30 @@ pub fn parseType(self: *Parser) ErrorSet!*ast.Type {
 
 pub fn parseFunctionType(self: *Parser) ErrorSet!*ast.Type {
     try self.consumeKind(.open_paren);
-    const parameters = try self.parseFieldList(.{
-        .type_requirement = .required,
-        .value_requirement = .allow,
-        .allow_attributes = true,
-    }, .close_paren);
+
+    var generics = std.ArrayListUnmanaged(ast.Field){};
+    var parameters = std.ArrayListUnmanaged(ast.Field){};
+    while (!self.currentTokenIsKind(.close_paren)) {
+        const is_generic = if (self.currentTokenIsKind(.generic)) blk: {
+            try self.consumeKind(.generic);
+            break :blk true;
+        } else false;
+        const field = try self.parseField(.{
+            .type_requirement = .required,
+            .value_requirement = .allow,
+            .allow_attributes = true,
+            .key_type = .expression,
+        });
+        if (is_generic)
+            try generics.append(self.container.node_allocator, field)
+        else
+            try parameters.append(self.container.node_allocator, field);
+
+        if (!self.currentTokenIsKind(.close_paren)) {
+            try self.consumeKind(.comma);
+        }
+    }
+
     try self.consumeKind(.close_paren);
     // TODO: parse modifiers
     const return_type: ?*ast.Type = if (self.currentTokenIsKind(.arrow)) blk: {
@@ -256,8 +248,11 @@ pub fn parseFunctionType(self: *Parser) ErrorSet!*ast.Type {
         break :blk try self.parseType();
     } else null;
 
+    std.debug.print("generics: {?}\n", .{return_type});
+
     return try self.container.allocType(.{ .function = .{
-        .parameters = parameters,
+        .generics = generics.items,
+        .parameters = parameters.items,
         .return_type = return_type,
     } });
 }
@@ -282,7 +277,9 @@ pub fn parseField(self: *Parser, info: FieldParseInfo) ErrorSet!ast.Field {
     // @ATTRIBUTES
     const attributes = try self.tryParseAttributes();
     // KEY
+    const start_field = self.current_token.location;
     const key = if (info.key_type == .expression) try self.parseExpression() else blk: {
+        const start = self.current_token.location;
         if (!self.currentTokenIsKind(.identifier)) {
             try self.pushErrorHere("expected identifier, got '{}'", .{self.current_token.kind});
             return error.ExpectedIdentifier;
@@ -290,7 +287,7 @@ pub fn parseField(self: *Parser, info: FieldParseInfo) ErrorSet!ast.Field {
         const data = self.current_token.data;
         try self.consumeKind(.identifier);
         break :blk try self.container.allocExpression(.{
-            .location = self.current_token.location,
+            .location = start,
             .variant = .{ .identifier = data },
         });
     };
@@ -330,7 +327,10 @@ pub fn parseField(self: *Parser, info: FieldParseInfo) ErrorSet!ast.Field {
         }
         break :blk null;
     };
+    const end = self.current_token.location;
+    const merged = start_field.merge(end);
     return .{
+        .location = merged,
         .attributes = attributes,
         .key = key,
         .typ = got_type,
@@ -482,6 +482,7 @@ pub fn parseWhileStatement(self: *Parser, attributes: []const *ast.Expression) E
 }
 
 pub fn parseForStatement(self: *Parser, attributes: []const *ast.Expression) ErrorSet!*ast.Statement {
+    const start = self.current_token.location;
     // for
     try self.consumeKind(.@"for");
     // (
@@ -495,7 +496,7 @@ pub fn parseForStatement(self: *Parser, attributes: []const *ast.Expression) Err
     // {BLOCK}
     const body = try self.parseBlockExpression(.{});
     return try self.container.allocStatement(.{
-        .location = self.current_token.location,
+        .location = start,
         .attributes = attributes,
         .variant = .{ .@"for" = .{
             .condition = condition,
@@ -506,6 +507,7 @@ pub fn parseForStatement(self: *Parser, attributes: []const *ast.Expression) Err
 }
 
 pub fn parseReturnStatement(self: *Parser, attributes: []const *ast.Expression) ErrorSet!*ast.Statement {
+    const start = self.current_token.location;
     // return
     try self.consumeKind(.@"return");
     // EXPRESSION
@@ -515,7 +517,7 @@ pub fn parseReturnStatement(self: *Parser, attributes: []const *ast.Expression) 
         break :blk try self.parseExpression();
     } else null;
     return try self.container.allocStatement(.{
-        .location = self.current_token.location,
+        .location = start.merge(self.current_token.location),
         .attributes = attributes,
         .variant = .{ .@"return" = expression },
     });

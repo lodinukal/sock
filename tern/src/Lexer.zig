@@ -90,6 +90,7 @@ pub const Token = struct {
         false,
         nil,
         triple_dash, // ---
+        generic,
 
         pub fn format(self: Kind, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             const value = switch (self) {
@@ -169,6 +170,7 @@ pub const Token = struct {
                 .true => "true",
                 .false => "false",
                 .nil => "nil",
+                .generic => "generic",
             };
             try writer.writeAll(value);
         }
@@ -197,6 +199,7 @@ pub const Token = struct {
                 .false,
                 .triple_dash,
                 .nil,
+                .generic,
                 => true,
                 else => false,
             };

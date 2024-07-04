@@ -1,13 +1,20 @@
 const std = @import("std");
 const ast = @import("ast.zig");
+const Reporter = @import("Reporter.zig");
 const Lexer = @import("Lexer.zig");
 const Parser = @import("Parser.zig");
-const IrGen = @import("IrGen.zig");
+const Check = @import("Check.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+
+    var reporter = Reporter{
+        .allocator = allocator,
+        .source = test_source,
+    };
+    defer reporter.deinit();
 
     var container: ast.Container = undefined;
     container.init(allocator, allocator);
@@ -17,6 +24,7 @@ pub fn main() !void {
         .file_path = "tern/src/shader.tn",
         .buffer = test_source,
         .container = &container,
+        .reporter = &reporter,
     };
     try parser.init();
     defer parser.deinit();
@@ -27,42 +35,7 @@ pub fn main() !void {
             if (err == error.FinishedParsing) {
                 break;
             }
-            const ASCII_START_RED = "\x1b[31m";
-            const ASCII_END = "\x1b[0m";
-            for (parser.errors.items) |got| {
-                var temp = std.mem.zeroes([1000]u8);
-                var tall = std.heap.FixedBufferAllocator.init(&temp);
-                const temp_allocator = tall.allocator();
-
-                std.debug.print(ASCII_START_RED ++ "error" ++ ASCII_END ++ ": {s}\n", .{got.message});
-                std.debug.print("--> {}\n", .{got.location});
-
-                const line_as_string = std.fmt.allocPrint(temp_allocator, "{d}", .{got.location.begin.line + 1}) catch unreachable;
-                const pad_amount = line_as_string.len + 2;
-
-                const whole_line = extractTokenLine(test_source, got.location.begin.line) orelse continue;
-                for (0..pad_amount) |_| {
-                    std.debug.print(" ", .{});
-                }
-                std.debug.print("|\n", .{});
-                std.debug.print(" {} | {s}\n", .{ got.location.begin.line + 1, whole_line });
-
-                for (0..pad_amount) |_| {
-                    std.debug.print(" ", .{});
-                }
-                std.debug.print("| ", .{});
-                for (0..got.location.begin.column) |_| {
-                    std.debug.print(" ", .{});
-                }
-                for (got.location.begin.column..got.location.end.column) |_| {
-                    std.debug.print("^", .{});
-                }
-                std.debug.print("\n", .{});
-                for (0..pad_amount) |_| {
-                    std.debug.print(" ", .{});
-                }
-                std.debug.print("|\n", .{});
-            }
+            std.debug.print("{}\n", .{reporter});
             return err;
         };
         if (stmt.variant == .@"if") {
@@ -73,37 +46,38 @@ pub fn main() !void {
 
     std.debug.print("Parsed successfully\n", .{});
 
-    var gen = IrGen{};
-    try gen.init(allocator);
-    defer gen.deinit();
+    var symbols = try Check.SymbolTable.init(allocator);
+    defer symbols.deinit(allocator);
 
-    const start_gen = std.time.nanoTimestamp();
-    for (0..8) |i| {
-        std.mem.doNotOptimizeAway(try gen.analyseStatement(container.root_stmts.items[i]));
+    var check = Check{
+        .allocator = allocator,
+        .reporter = &reporter,
+        .symbols = &symbols,
+    };
+    defer std.debug.print("{}", .{reporter});
+
+    const start_check = std.time.nanoTimestamp();
+    for (container.root_stmts.items) |stmt| {
+        try check.checkStatement(stmt);
     }
-    const end_gen = std.time.nanoTimestamp();
+    const end_check = std.time.nanoTimestamp();
 
-    const flattened = try gen.module.interner.flatten(allocator);
-    defer allocator.free(flattened.data);
+    // var gen = IrGen{};
+    // try gen.init(allocator);
+    // defer gen.deinit();
 
-    std.debug.print("{}\n", .{gen.module});
+    // const start_gen = std.time.nanoTimestamp();
+    // for (0..8) |i| {
+    //     std.mem.doNotOptimizeAway(try gen.analyseStatement(container.root_stmts.items[i]));
+    // }
+    // const end_gen = std.time.nanoTimestamp();
+
+    // std.debug.print("{}\n", .{gen.module});
     std.debug.print("Parse time: {d}ns\n", .{end_parse - start_parse});
-    std.debug.print("Gen time: {d}ns\n", .{end_gen - start_gen});
+    std.debug.print("Check time: {d}ns\n", .{end_check - start_check});
 }
 
 const test_source = @embedFile("shader.tn");
-
-pub fn extractTokenLine(source: []const u8, line_target: u32) ?[]const u8 {
-    var line_it = std.mem.splitScalar(u8, source, '\n');
-    var index: u32 = 0;
-    while (line_it.next()) |line| {
-        if (index == line_target) {
-            return line;
-        }
-        index += 1;
-    }
-    return null;
-}
 
 fn recurseExpressionTree(exp: *ast.Expression, depth: usize) void {
     for (0..depth) |_| {

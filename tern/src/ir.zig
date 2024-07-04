@@ -23,12 +23,11 @@ pub const InstructionIndex = enum(u32) {
     type_enum_literal = 13,
     type_type = 14,
     nil = 15,
-    undefined = 16,
 
     none = std.math.maxInt(u32),
     _,
 
-    pub const max: u32 = @intFromEnum(InstructionIndex.undefined);
+    pub const max: u32 = @intFromEnum(InstructionIndex.nil);
 };
 pub const DataIndex = enum(u32) { none = std.math.maxInt(u32), _ };
 pub const Instruction = union(enum) {
@@ -358,7 +357,6 @@ pub const PrimitiveInstructions = struct {
         .{ .typ = .enum_literal },
         .{ .typ = .typ },
         .{ .value = .nil },
-        .{ .value = .undefined },
     };
 };
 
