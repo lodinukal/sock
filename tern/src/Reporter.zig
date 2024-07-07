@@ -2,7 +2,7 @@ const std = @import("std");
 const ast = @import("ast.zig");
 
 pub const Error = struct {
-    location: ast.Location,
+    location: ?ast.Location,
     message: []const u8,
     kind: ReportKind,
 
@@ -44,7 +44,7 @@ pub fn deinit(self: *Reporter) void {
 pub fn push(
     self: *Reporter,
     kind: ReportKind,
-    location: ast.Location,
+    location: ?ast.Location,
     comptime fmt: []const u8,
     args: anytype,
 ) !void {
@@ -68,29 +68,33 @@ pub fn format(self: Reporter, comptime _: []const u8, _: std.fmt.FormatOptions, 
         const temp_allocator = fba.allocator();
 
         try writer.print("{s}{s}" ++ ASCII_END ++ "\n", .{ got.kind.getAsciiColourStart(), got.message });
-        try writer.print("--> {}\n", .{got.location});
+        if (got.location == null) {
+            continue;
+        }
+        const location = got.location.?;
+        try writer.print("--> {}\n", .{location});
 
-        const line_as_string = std.fmt.allocPrint(temp_allocator, "{d}", .{got.location.begin.line + 1}) catch unreachable;
+        const line_as_string = std.fmt.allocPrint(temp_allocator, "{d}", .{location.begin.line + 1}) catch unreachable;
         const pad_amount = line_as_string.len + 2;
 
-        const whole_line = extractTokenLine(self.source, got.location.begin.line) orelse continue;
+        const whole_line = extractTokenLine(self.source, location.begin.line) orelse continue;
         for (0..pad_amount) |_| {
             try writer.print(" ", .{});
         }
         try writer.print("|\n", .{});
-        try writer.print(" {} | {s}\n", .{ got.location.begin.line + 1, whole_line });
+        try writer.print(" {} | {s}\n", .{ location.begin.line + 1, whole_line });
 
         for (0..pad_amount) |_| {
             try writer.print(" ", .{});
         }
         try writer.print("| ", .{});
-        for (0..got.location.begin.column) |_| {
+        for (0..location.begin.column) |_| {
             try writer.print(" ", .{});
         }
         // ascii green
         const ASCII_GREEN = "\x1b[32m";
         try writer.writeAll(ASCII_GREEN);
-        for (got.location.begin.column..got.location.end.column) |_| {
+        for (location.begin.column..location.end.column) |_| {
             try writer.print("^", .{});
         }
         try writer.writeAll(ASCII_END);
