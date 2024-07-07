@@ -127,6 +127,24 @@ pub const PrimitiveType = enum(u8) {
         special,
     };
 
+    pub fn name(self: PrimitiveType) []const u8 {
+        switch (self) {
+            .i8 => return "i8",
+            .i16 => return "i16",
+            .i32 => return "i32",
+            .i64 => return "i64",
+            .u8 => return "u8",
+            .u16 => return "u16",
+            .u32 => return "u32",
+            .u64 => return "u64",
+            .f32 => return "f32",
+            .f64 => return "f64",
+            .bool => return "bool",
+            .typ => return "type",
+            .unit => return "unit",
+        }
+    }
+
     pub inline fn getKind(self: PrimitiveType) Kind {
         switch (self) {
             .i8, .i16, .i32, .i64 => return .signed_integer,
@@ -232,9 +250,11 @@ pub const Field = struct {
 
 pub const Type = union(TypeKind) {
     structure: struct {
+        location: Location,
         fields: []Field,
     },
     enumeration: struct {
+        location: Location,
         fields: []Field,
     },
     expression: *Expression,
@@ -292,7 +312,14 @@ pub const Expression = struct {
         string_literal: []const u8,
         enum_literal: []const u8,
         char_literal: u32,
-        structure_literal: []Field,
+        structure_literal: struct {
+            // TODO: cleanup
+            explicit_type: ?union(enum) {
+                expression: *Expression,
+                typ: Type,
+            } = null,
+            fields: []Field,
+        },
         typ: *const Type,
         identifier: []const u8,
         binary: struct {
@@ -317,11 +344,19 @@ pub const Expression = struct {
         subscript: struct {
             array: *Expression,
             index: *Expression,
+            end_location: Location,
+            // analyse in the type checker
+            result_type: ?Type = null,
+        },
+        deref: struct {
+            operand: *Expression,
+            end_location: Location,
             // analyse in the type checker
             result_type: ?Type = null,
         },
         field: struct {
             record: *Expression,
+            end_location: Location,
             field: []const u8,
             // analyse in the type checker
             result_type: ?Type = null,
@@ -365,6 +400,7 @@ pub const ExpressionKind = enum {
     unary,
     call,
     subscript,
+    deref,
     field,
     function,
     lambda,
