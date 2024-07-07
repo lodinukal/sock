@@ -34,10 +34,13 @@ let extract_position = fn(input: vs_output) -> float3 {
 }
 
 @PIXEL
-export fn ps_main(input: vs_output) -> ps_output {
+export fn ps_main(input: vs_output, in_string: string) -> ps_output {
     let result = input
         |> extract_position(_)
+    let first_char = in_string[0]
+    mut copy_input = input
+    copy_input.position[0] = result[0]
     return .{
-        color = float4(input.color, 1.0),
+        color = float4{input.color[0], input.color[1], input.color[2], 1.0},
     }
 }

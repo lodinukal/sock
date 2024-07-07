@@ -44,6 +44,7 @@ reporter: ?*Reporter = null,
 container: *ast.Container, // not owned
 
 in_pipeline: bool = false,
+structure_literals_allowed: bool = true,
 
 pub fn init(
     self: *Parser,
@@ -149,6 +150,9 @@ pub fn parseTopLevel(self: *Parser) ErrorSet!*ast.Statement {
 }
 
 pub fn parseType(self: *Parser) ErrorSet!*ast.Type {
+    const old_structure_literals_allowed = self.structure_literals_allowed;
+    self.structure_literals_allowed = false;
+    defer self.structure_literals_allowed = old_structure_literals_allowed;
     switch (self.current_token.kind) {
         .structure => return try self.parseStructType(),
         .question => {
@@ -248,8 +252,6 @@ pub fn parseFunctionType(self: *Parser) ErrorSet!*ast.Type {
         break :blk try self.parseType();
     } else null;
 
-    std.debug.print("generics: {?}\n", .{return_type});
-
     return try self.container.allocType(.{ .function = .{
         .generics = generics.items,
         .parameters = parameters.items,
@@ -278,19 +280,7 @@ pub fn parseField(self: *Parser, info: FieldParseInfo) ErrorSet!ast.Field {
     const attributes = try self.tryParseAttributes();
     // KEY
     const start_field = self.current_token.location;
-    const key = if (info.key_type == .expression) try self.parseExpression() else blk: {
-        const start = self.current_token.location;
-        if (!self.currentTokenIsKind(.identifier)) {
-            try self.pushErrorHere("expected identifier, got '{}'", .{self.current_token.kind});
-            return error.ExpectedIdentifier;
-        }
-        const data = self.current_token.data;
-        try self.consumeKind(.identifier);
-        break :blk try self.container.allocExpression(.{
-            .location = start,
-            .variant = .{ .identifier = data },
-        });
-    };
+    const key = if (info.key_type == .expression) try self.parseExpression() else try self.parseIdentifierExpression();
     // :
     const got_type: ?*ast.Type =
         if (self.currentTokenIsKind(.colon))
@@ -351,6 +341,7 @@ pub fn parseFieldList(self: *Parser, info: FieldParseInfo, closer: Lexer.Token.K
 }
 
 pub fn parseStructType(self: *Parser) ErrorSet!*ast.Type {
+    const start = self.current_token.location;
     // struct
     try self.consumeKind(.structure);
     // {
@@ -364,6 +355,7 @@ pub fn parseStructType(self: *Parser) ErrorSet!*ast.Type {
     // }
     try self.consumeKind(.close_brace);
     return try self.container.allocType(.{ .structure = .{
+        .location = start,
         .fields = fields,
     } });
 }
@@ -381,19 +373,16 @@ pub fn parseStatement(self: *Parser) ErrorSet!*ast.Statement {
         .match => return try self.parseMatchStatement(attributes),
         .mut, .let, .@"pub", .@"export", .@"fn" => return try self.parseDeclaration(attributes),
         else => {
+            const start = self.current_token.location;
             const expression = try self.parseExpression();
             // peek ahead to check for assignment
             if (self.current_token.kind.isAssignmentOperation()) {
                 const using_token = self.current_token.kind;
                 try self.consumeKind(self.current_token.kind);
-                return try self.parseAssignmentStatement(
-                    attributes,
-                    expression,
-                    using_token,
-                );
+                return try self.parseAssignmentStatement(attributes, expression, using_token, start);
             }
             return try self.container.allocStatement(.{
-                .location = self.current_token.location,
+                .location = start,
                 .attributes = attributes,
                 .variant = .{ .expression = expression },
             });
@@ -461,6 +450,7 @@ pub fn parseIfStatement(self: *Parser, attributes: []const *ast.Expression) Erro
 }
 
 pub fn parseWhileStatement(self: *Parser, attributes: []const *ast.Expression) ErrorSet!*ast.Statement {
+    const start = self.current_token.location;
     // while
     try self.consumeKind(.@"while");
     // (
@@ -472,7 +462,7 @@ pub fn parseWhileStatement(self: *Parser, attributes: []const *ast.Expression) E
     // {BLOCK}
     const body = try self.parseBlockExpression(.{});
     return try self.container.allocStatement(.{
-        .location = self.current_token.location,
+        .location = start,
         .attributes = attributes,
         .variant = .{ .@"while" = .{
             .condition = condition,
@@ -557,24 +547,26 @@ pub fn tryParseLabel(self: *Parser, definition: bool) ErrorSet!?[]const u8 {
 }
 
 pub fn parseBreakStatement(self: *Parser, attributes: []const *ast.Expression) ErrorSet!*ast.Statement {
+    const start = self.current_token.location;
     // break
     try self.consumeKind(.@"break");
     // :label
     const label = try self.tryParseLabel(false);
     return try self.container.allocStatement(.{
-        .location = self.current_token.location,
+        .location = start,
         .attributes = attributes,
         .variant = .{ .@"break" = .{ .label = label } },
     });
 }
 
 pub fn parseContinueStatement(self: *Parser, attributes: []const *ast.Expression) ErrorSet!*ast.Statement {
+    const start = self.current_token.location;
     // continue
     try self.consumeKind(.@"continue");
     // :label
     const label = try self.tryParseLabel(false);
     return try self.container.allocStatement(.{
-        .location = self.current_token.location,
+        .location = start,
         .attributes = attributes,
         .variant = .{ .@"continue" = .{ .label = label } },
     });
@@ -695,11 +687,12 @@ pub fn parseAssignmentStatement(
     attributes: []const *ast.Expression,
     assign_to: *ast.Expression,
     kind: Lexer.Token.Kind,
+    start: ast.Location,
 ) ErrorSet!*ast.Statement {
     // EXPRESSION
     const expression = try self.parseExpression();
     return try self.container.allocStatement(.{
-        .location = self.current_token.location,
+        .location = start,
         .attributes = attributes,
         .variant = .{ .assignment = .{
             .target = assign_to,
@@ -787,6 +780,10 @@ pub fn parseBlockExpression(self: *Parser, info: ParseBlockInfo) ErrorSet!*ast.E
         if (self.currentTokenIsKind(.close_brace)) {
             try self.consumeKind(.close_brace);
             break;
+        }
+        if (self.currentTokenIsKind(.comment)) {
+            try self.consumeKind(.comment);
+            continue;
         }
         const statement = try self.parseStatement();
         try statements.append(self.container.node_allocator, statement);
@@ -983,9 +980,10 @@ pub fn parseStructureLiteral(self: *Parser) ErrorSet!*ast.Expression {
         .key_type = .expression,
     }, .close_brace);
     try self.consumeKind(.close_brace);
-    return try self.container.allocExpression(.{ .location = start, .variant = .{
-        .structure_literal = fields,
-    } });
+    return try self.container.allocExpression(.{ .location = start, .variant = .{ .structure_literal = .{
+        .explicit_type = null,
+        .fields = fields,
+    } } });
 }
 
 pub fn parseIdentifierExpression(self: *Parser) ErrorSet!*ast.Expression {
@@ -997,6 +995,16 @@ pub fn parseIdentifierExpression(self: *Parser) ErrorSet!*ast.Expression {
     const expr = try self.container.allocExpression(.{ .location = start, .variant = .{
         .identifier = identifier,
     } });
+
+    if (self.currentTokenIsKind(.open_brace) and self.structure_literals_allowed) {
+        const literal = try self.parseStructureLiteral();
+        literal.variant.structure_literal.explicit_type = .{
+            .expression = expr,
+        };
+        literal.location = start;
+        literal.typ = ast.Type{ .expression = expr };
+        return literal;
+    }
 
     return try self.parseExpressionChain(expr);
 }
@@ -1032,10 +1040,12 @@ pub fn parseSubscriptExpression(self: *Parser, expression: *ast.Expression) Erro
     const start = self.current_token.location;
     try self.consumeKind(.open_bracket);
     const index = try self.parseExpression();
+    const end_location = self.current_token.location;
     try self.consumeKind(.close_bracket);
 
     const expr = try self.container.allocExpression(.{ .location = start, .variant = .{
         .subscript = .{
+            .end_location = end_location,
             .array = expression,
             .index = index,
         },
@@ -1047,17 +1057,32 @@ pub fn parseSubscriptExpression(self: *Parser, expression: *ast.Expression) Erro
 pub fn parseSelectorExpression(self: *Parser, expression: *ast.Expression) ErrorSet!*ast.Expression {
     const start = self.current_token.location;
     try self.consumeKind(.dot);
-    try self.expectCurrentTokenIsKind(.identifier);
-    const field = self.current_token.data;
-    try self.consumeKind(.identifier);
-    const expr = try self.container.allocExpression(.{ .location = start, .variant = .{
-        .field = .{
-            .record = expression,
-            .field = field,
-        },
-    } });
+    if (self.currentTokenIsKind(.star)) {
+        const end_location = self.current_token.location;
+        try self.consumeKind(.star);
+        const expr = try self.container.allocExpression(.{ .location = start, .variant = .{
+            .deref = .{
+                .operand = expression,
+                .end_location = end_location,
+            },
+        } });
 
-    return try self.parseExpressionChain(expr);
+        return try self.parseExpressionChain(expr);
+    } else {
+        const field_location = self.current_token.location;
+        try self.expectCurrentTokenIsKind(.identifier);
+        const field = self.current_token.data;
+        try self.consumeKind(.identifier);
+        const expr = try self.container.allocExpression(.{ .location = start, .variant = .{
+            .field = .{
+                .record = expression,
+                .end_location = field_location,
+                .field = field,
+            },
+        } });
+
+        return try self.parseExpressionChain(expr);
+    }
 }
 
 pub fn parsePipelineExpression(self: *Parser, expression: *ast.Expression) ErrorSet!*ast.Expression {
