@@ -30,7 +30,7 @@ let rhs_fn = fn(a: f32, b: f32) -> f32 {
 // }
 
 let extract_position = fn(input: vs_output) -> float3 {
-    return input.position
+    return .{input.position[0], input.position[1], input.position[2]}
 }
 
 @PIXEL

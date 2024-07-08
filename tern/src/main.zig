@@ -54,7 +54,10 @@ pub fn main() !void {
         .reporter = &reporter,
         .symbols = &symbols,
     };
-    defer std.debug.print("{}", .{reporter});
+    defer {
+        std.debug.print("{}", .{reporter});
+        check.deinit();
+    }
 
     const start_check = std.time.nanoTimestamp();
     for (container.root_stmts.items) |stmt| {

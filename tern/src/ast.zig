@@ -373,6 +373,7 @@ pub const Expression = struct {
             inferred_type: ?Type = null,
         },
         block: struct {
+            label: ?[]const u8 = null,
             statements: []const *Statement,
             // analyse in the type checker
             result_type: ?Type = null,
@@ -429,6 +430,7 @@ pub const Statement = struct {
             capture: ?[]Field = null,
             then_branch: *Expression,
             else_branch: ?*Expression = null,
+            result_type: ?Type = null,
         },
         @"while": struct {
             condition: *Expression,
@@ -442,13 +444,16 @@ pub const Statement = struct {
         @"return": ?*Expression,
         @"break": struct {
             label: ?[]const u8,
+            resolved_block: ?*Expression = null,
         },
         @"continue": struct {
             label: ?[]const u8,
+            resolved_block: ?*Expression = null,
         },
         match: struct {
-            expressions: *Expression,
+            expression: *Expression,
             cases: []const MatchCase,
+            result_type: ?Type = null,
         },
         declaration: Declaration,
         assignment: struct {

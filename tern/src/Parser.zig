@@ -612,7 +612,7 @@ pub fn parseMatchStatement(self: *Parser, attributes: []const *ast.Expression) E
         .location = start,
         .attributes = attributes,
         .variant = .{ .match = .{
-            .expressions = expression,
+            .expression = expression,
             .cases = cases.items,
         } },
     });
@@ -762,6 +762,9 @@ pub fn parseBlockExpression(self: *Parser, info: ParseBlockInfo) ErrorSet!*ast.E
     const start = self.current_token.location;
     var statements = std.ArrayListUnmanaged(*ast.Statement){};
     const statement_requirement = info.statement_requirement;
+
+    const label = try self.tryParseLabel(true);
+
     // {
     var multiple_statements = false;
     if (self.currentTokenIsKind(.open_brace)) {
@@ -795,6 +798,7 @@ pub fn parseBlockExpression(self: *Parser, info: ParseBlockInfo) ErrorSet!*ast.E
         .location = start,
         .variant = .{
             .block = .{
+                .label = label,
                 .statements = statements.items,
             },
         },
