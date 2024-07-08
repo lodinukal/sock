@@ -60,9 +60,7 @@ pub fn main() !void {
     }
 
     const start_check = std.time.nanoTimestamp();
-    for (container.root_stmts.items) |stmt| {
-        try check.checkStatement(stmt);
-    }
+    try check.checkContainer(&container);
     const end_check = std.time.nanoTimestamp();
 
     // var gen = IrGen{};
@@ -80,7 +78,7 @@ pub fn main() !void {
     std.debug.print("Check time: {d}ns\n", .{end_check - start_check});
 }
 
-const test_source = @embedFile("shader.tn");
+const test_source = @embedFile("test.tn");
 
 fn recurseExpressionTree(exp: *ast.Expression, depth: usize) void {
     for (0..depth) |_| {

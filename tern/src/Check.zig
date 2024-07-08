@@ -19,6 +19,9 @@ current_enumeration: ?*ast.Expression = null,
 block_stack: std.ArrayListUnmanaged(*ast.Expression) = .{},
 current_pipeline: ?*ast.Expression = null,
 
+to_analyse_statements: std.ArrayListUnmanaged(*ast.Statement) = .{},
+to_analyse_expressions: std.ArrayListUnmanaged(*ast.Expression) = .{},
+
 is_mutable_access: bool = false,
 
 pub fn deinit(self: *Self) void {
@@ -34,6 +37,12 @@ pub fn pushErr(self: *Self, location: ?ast.Location, comptime fmt: []const u8, a
 pub fn pushInfo(self: *Self, location: ?ast.Location, comptime fmt: []const u8, args: anytype) ErrorSet!void {
     if (self.reporter) |reporter| {
         try reporter.push(.info, location, fmt, args);
+    }
+}
+
+pub fn checkContainer(self: *Self, container: *ast.Container) ErrorSet!void {
+    for (container.root_stmts.items) |statement| {
+        try self.checkStatement(statement);
     }
 }
 
@@ -66,12 +75,6 @@ pub fn checkExpression(self: *Self, expression: *ast.Expression) ErrorSet!void {
                 .equal_equal, .bang_equal, .less, .less_equal, .greater, .greater_equal => {
                     if (left_type != .primitive or right_type != .primitive) {
                         try self.pushErr(expression.location, "binary operator '{}' requires operands of type 'primitive'", .{binary.op});
-                        try self.pushInfo(binary.left.location, "left operand is of type '{s}'", .{prettyPrintType(left_type)});
-                        try self.pushInfo(binary.right.location, "right operand is of type '{s}'", .{prettyPrintType(right_type)});
-                        return error.Invalid;
-                    }
-                    if (left_type.primitive != right_type.primitive) {
-                        try self.pushErr(expression.location, "binary operator '{}' requires operands of the same type", .{binary.op});
                         try self.pushInfo(binary.left.location, "left operand is of type '{s}'", .{prettyPrintType(left_type)});
                         try self.pushInfo(binary.right.location, "right operand is of type '{s}'", .{prettyPrintType(right_type)});
                         return error.Invalid;
@@ -222,7 +225,6 @@ pub fn checkExpression(self: *Self, expression: *ast.Expression) ErrorSet!void {
                 try self.checkExpression(body);
                 // TODO: check return type is the same as function body return type
             }
-
             expression.typ = function.typ.*;
         },
         .float_literal => {
@@ -641,7 +643,7 @@ pub fn checkStatement(self: *Self, statement: *ast.Statement) ErrorSet!void {
             // condition: ?*Expression = null,
             // capture: ?[]Field = null,
             // body: *Expression,
-            try self.checkExpression(for_statement.condition.?);
+            try self.checkExpression(for_statement.condition);
 
             {
                 try self.symbols.enterScope(self.allocator);
@@ -810,6 +812,18 @@ pub fn checkDeclaration(self: *Self, location: ast.Location, declaration: *ast.D
         try self.pushInfo(symbol.location, "previous declaration here", .{});
         return;
     }
+
+    const is_function = declaration.initialiser.variant == .function;
+    if (is_function) {
+        declaration.typ = declaration.initialiser.variant.function.typ;
+        try self.symbols.add(self.allocator, declaration.identifier, .{
+            .typ = (declaration.typ orelse &Primitives.i32_type).*,
+            .mutable = declaration.mutable,
+            .expression = declaration.initialiser,
+            .location = location,
+        });
+    }
+
     try self.checkExpression(declaration.initialiser);
     if (declaration.typ) |typ|
         try self.checkType(typ);
@@ -824,12 +838,14 @@ pub fn checkDeclaration(self: *Self, location: ast.Location, declaration: *ast.D
         return error.Invalid;
     }
 
-    try self.symbols.add(self.allocator, declaration.identifier, .{
-        .typ = (declaration.typ orelse &Primitives.i32_type).*,
-        .mutable = declaration.mutable,
-        .expression = declaration.initialiser,
-        .location = location,
-    });
+    if (!is_function) {
+        try self.symbols.add(self.allocator, declaration.identifier, .{
+            .typ = (declaration.typ orelse &Primitives.i32_type).*,
+            .mutable = declaration.mutable,
+            .expression = declaration.initialiser,
+            .location = location,
+        });
+    }
 }
 
 pub fn checkType(self: *Self, typ: *const ast.Type) ErrorSet!void {

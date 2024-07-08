@@ -437,7 +437,7 @@ pub const Statement = struct {
             body: *Expression,
         },
         @"for": struct {
-            condition: ?*Expression = null,
+            condition: *Expression,
             capture: ?[]Field = null,
             body: *Expression,
         },
