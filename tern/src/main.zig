@@ -3,7 +3,8 @@ const ast = @import("ast.zig");
 const Reporter = @import("Reporter.zig");
 const Lexer = @import("Lexer.zig");
 const Parser = @import("Parser.zig");
-const Check = @import("Check.zig");
+// const Check = @import("Check.zig");
+const Sosh = @import("Sosh.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -46,22 +47,22 @@ pub fn main() !void {
 
     std.debug.print("Parsed successfully\n", .{});
 
-    var symbols = try Check.SymbolTable.init(allocator);
-    defer symbols.deinit(allocator);
+    // var symbols = try Check.SymbolTable.init(allocator);
+    // defer symbols.deinit(allocator);
 
-    var check = Check{
-        .allocator = allocator,
-        .reporter = &reporter,
-        .symbols = &symbols,
-    };
-    defer {
-        std.debug.print("{}", .{reporter});
-        check.deinit();
-    }
+    // var check = Check{
+    //     .allocator = allocator,
+    //     .reporter = &reporter,
+    //     .symbols = &symbols,
+    // };
+    // defer {
+    //     std.debug.print("{}", .{reporter});
+    //     check.deinit();
+    // }
 
-    const start_check = std.time.nanoTimestamp();
-    try check.checkContainer(&container);
-    const end_check = std.time.nanoTimestamp();
+    // const start_check = std.time.nanoTimestamp();
+    // try check.checkContainer(&container);
+    // const end_check = std.time.nanoTimestamp();
 
     // var gen = IrGen{};
     // try gen.init(allocator);
@@ -74,6 +75,24 @@ pub fn main() !void {
     // const end_gen = std.time.nanoTimestamp();
 
     // std.debug.print("{}\n", .{gen.module});
+
+    var sosh = Sosh.Context{
+        .allocator = allocator,
+        .reporter = &reporter,
+    };
+    sosh.init();
+    defer sosh.deinit();
+
+    const start_check = std.time.nanoTimestamp();
+    try sosh.resolveContainer(&container);
+    const end_check = std.time.nanoTimestamp();
+
+    var it = sosh.global_environment.values.iterator();
+    while (it.next()) |got| {
+        const got_item = sosh.get(got.value_ptr.*);
+        std.debug.print("{s}: {}\n", .{ got.key_ptr.*, got_item });
+    }
+
     std.debug.print("Parse time: {d}ns\n", .{end_parse - start_parse});
     std.debug.print("Check time: {d}ns\n", .{end_check - start_check});
 }

@@ -316,7 +316,7 @@ pub const Expression = struct {
             // TODO: cleanup
             explicit_type: ?union(enum) {
                 expression: *Expression,
-                typ: Type,
+                typ: *Type,
             } = null,
             fields: []Field,
         },
