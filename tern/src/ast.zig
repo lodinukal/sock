@@ -299,90 +299,94 @@ pub const MatchCase = struct {
     body: *Expression,
 };
 
+pub const StructureLiteral = struct {
+    explicit_type: ?*const Expression = null,
+    fields: []Field,
+};
+
+pub const IntegerLiteral = struct {
+    value: u64,
+    negative: bool,
+    suffix: []const u8 = "",
+};
+
+pub const BinaryOp = struct {
+    op: Lexer.Token.Kind,
+    left: *Expression,
+    right: *Expression,
+};
+
+pub const UnaryOp = struct {
+    op: Lexer.Token.Kind,
+    operand: *Expression,
+};
+
+pub const Call = struct {
+    callee: *Expression,
+    arguments: []*Expression,
+};
+
+pub const Subscript = struct {
+    array: *Expression,
+    index: *Expression,
+    end_location: Location,
+};
+
+pub const Deref = struct {
+    operand: *Expression,
+    end_location: Location,
+};
+
+pub const FieldAccess = struct {
+    record: *Expression,
+    end_location: Location,
+    field: []const u8,
+};
+
+pub const Function = struct {
+    typ: *const Type,
+    body: ?*Expression = null,
+};
+
+pub const Lambda = struct {
+    capture: []Field,
+    body: *Expression,
+    // analyse in the type checker
+    inferred_type: ?*const Type = null,
+};
+
+pub const Block = struct {
+    label: ?[]const u8 = null,
+    statements: []const *Statement,
+};
+
+pub const Pipeline = struct {
+    stages: []const *Expression,
+};
+
 pub const Expression = struct {
     location: Location,
-    typ: ?Type = null,
+    typ: ?*const Type = null,
     variant: union(ExpressionKind) {
         boolean_literal: bool,
-        integer_literal: struct {
-            value: u64,
-            signed: bool,
-        },
+        integer_literal: IntegerLiteral,
         float_literal: f64,
         string_literal: []const u8,
         enum_literal: []const u8,
         char_literal: u32,
-        structure_literal: struct {
-            // TODO: cleanup
-            explicit_type: ?union(enum) {
-                expression: *Expression,
-                typ: Type,
-            } = null,
-            fields: []Field,
-        },
+        structure_literal: StructureLiteral,
         typ: *const Type,
         identifier: []const u8,
-        binary: struct {
-            op: Lexer.Token.Kind,
-            left: *Expression,
-            right: *Expression,
-            // analyse in the type checker
-            result_type: ?Type = null,
-        },
-        unary: struct {
-            op: Lexer.Token.Kind,
-            operand: *Expression,
-            // analyse in the type checker
-            result_type: ?Type = null,
-        },
-        call: struct {
-            callee: *Expression,
-            arguments: []*Expression,
-            // analyse in the type checker
-            result_type: ?Type = null,
-        },
-        subscript: struct {
-            array: *Expression,
-            index: *Expression,
-            end_location: Location,
-            // analyse in the type checker
-            result_type: ?Type = null,
-        },
-        deref: struct {
-            operand: *Expression,
-            end_location: Location,
-            // analyse in the type checker
-            result_type: ?Type = null,
-        },
-        field: struct {
-            record: *Expression,
-            end_location: Location,
-            field: []const u8,
-            // analyse in the type checker
-            result_type: ?Type = null,
-        },
-        function: struct {
-            typ: *const Type,
-            /// external functions have no body
-            body: ?*Expression = null,
-        },
-        lambda: struct {
-            capture: []Field,
-            body: *Expression,
-            // analyse in the type checker
-            inferred_type: ?Type = null,
-        },
-        block: struct {
-            label: ?[]const u8 = null,
-            statements: []const *Statement,
-            // analyse in the type checker
-            result_type: ?Type = null,
-        },
-        pipeline: struct {
-            stages: []const *Expression,
-            // analyse in the type checker
-            result_type: ?Type = null,
-        },
+        binary: BinaryOp,
+        unary: UnaryOp,
+        call: Call,
+        subscript: Subscript,
+        deref: Deref,
+        field: FieldAccess,
+        function: Function,
+        lambda: Lambda,
+        block: Block,
+        pipeline: Pipeline,
         undefined: void,
         nil: void,
     },
@@ -411,7 +415,37 @@ pub const ExpressionKind = enum {
     nil,
 };
 
-pub const Declaration = struct {
+pub const IfStatement = struct {
+    condition: *Expression,
+    capture: ?[]Field = null,
+    then_branch: *Expression,
+    else_branch: ?*Expression = null,
+
+    result: ?*const Type = null,
+};
+
+pub const WhileStatement = struct {
+    condition: *Expression,
+    body: *Expression,
+};
+
+pub const ForStatement = struct {
+    condition: ?*Expression = null,
+    capture: ?[]Field = null,
+    body: *Expression,
+};
+
+pub const ControlFlowStatement = struct {
+    label: ?[]const u8,
+    resolved_block: ?*Expression = null,
+};
+
+pub const MatchStatement = struct {
+    expression: *Expression,
+    cases: []const MatchCase,
+};
+
+pub const DeclarationStatement = struct {
     public: bool = false,
     exported: bool = false,
     mutable: bool = false,
@@ -420,47 +454,26 @@ pub const Declaration = struct {
     initialiser: *Expression,
 };
 
+pub const AssignmentStatement = struct {
+    target: *Expression,
+    value: *Expression,
+    kind: Lexer.Token.Kind,
+};
+
 pub const Statement = struct {
     location: Location,
     attributes: []const *Expression,
     variant: union(StatementKind) {
         expression: *Expression,
-        @"if": struct {
-            condition: *Expression,
-            capture: ?[]Field = null,
-            then_branch: *Expression,
-            else_branch: ?*Expression = null,
-            result_type: ?Type = null,
-        },
-        @"while": struct {
-            condition: *Expression,
-            body: *Expression,
-        },
-        @"for": struct {
-            condition: ?*Expression = null,
-            capture: ?[]Field = null,
-            body: *Expression,
-        },
+        @"if": IfStatement,
+        @"while": WhileStatement,
+        @"for": ForStatement,
         @"return": ?*Expression,
-        @"break": struct {
-            label: ?[]const u8,
-            resolved_block: ?*Expression = null,
-        },
-        @"continue": struct {
-            label: ?[]const u8,
-            resolved_block: ?*Expression = null,
-        },
-        match: struct {
-            expression: *Expression,
-            cases: []const MatchCase,
-            result_type: ?Type = null,
-        },
-        declaration: Declaration,
-        assignment: struct {
-            target: *Expression,
-            value: *Expression,
-            kind: Lexer.Token.Kind,
-        },
+        @"break": ControlFlowStatement,
+        @"continue": ControlFlowStatement,
+        match: MatchStatement,
+        declaration: DeclarationStatement,
+        assignment: AssignmentStatement,
     },
 };
 pub const StatementKind = enum {

@@ -13,16 +13,8 @@ allocator: std.mem.Allocator,
 symbols: *SymbolTable,
 reporter: ?*Reporter = null,
 
-current_function: ?*ast.Expression = null,
-current_structure: ?*ast.Expression = null,
-current_enumeration: ?*ast.Expression = null,
-block_stack: std.ArrayListUnmanaged(*ast.Expression) = .{},
-current_pipeline: ?*ast.Expression = null,
-
-is_mutable_access: bool = false,
-
 pub fn deinit(self: *Self) void {
-    self.block_stack.deinit(self.allocator);
+    _ = self;
 }
 
 pub fn pushErr(self: *Self, location: ?ast.Location, comptime fmt: []const u8, args: anytype) ErrorSet!void {
@@ -37,1026 +29,1260 @@ pub fn pushInfo(self: *Self, location: ?ast.Location, comptime fmt: []const u8, 
     }
 }
 
-pub fn checkExpression(self: *Self, expression: *ast.Expression) ErrorSet!void {
-    switch (expression.variant) {
-        .binary => |*binary| {
-            try self.checkExpression(binary.left);
-            try self.checkExpression(binary.right);
-
-            const left_type = try self.getTypeFromExpression(binary.left);
-            const right_type = try self.getTypeFromExpression(binary.right);
-
-            switch (binary.op) {
-                .plus, .minus, .star, .slash, .percent => {
-                    if (left_type != .primitive or right_type != .primitive) {
-                        try self.pushErr(expression.location, "binary operator '{}' requires operands of type 'primitive'", .{binary.op});
-                        try self.pushInfo(binary.left.location, "left operand is of type '{s}'", .{prettyPrintType(left_type)});
-                        try self.pushInfo(binary.right.location, "right operand is of type '{s}'", .{prettyPrintType(right_type)});
-                        return error.Invalid;
-                    }
-                    if (left_type.primitive != right_type.primitive) {
-                        try self.pushErr(expression.location, "binary operator '{}' requires operands of the same type", .{binary.op});
-                        try self.pushInfo(binary.left.location, "left operand is of type '{s}'", .{prettyPrintType(left_type)});
-                        try self.pushInfo(binary.right.location, "right operand is of type '{s}'", .{prettyPrintType(right_type)});
-                        return error.Invalid;
-                    }
-                    binary.result_type = left_type;
-                    expression.typ = binary.result_type;
-                },
-                .equal_equal, .bang_equal, .less, .less_equal, .greater, .greater_equal => {
-                    if (left_type != .primitive or right_type != .primitive) {
-                        try self.pushErr(expression.location, "binary operator '{}' requires operands of type 'primitive'", .{binary.op});
-                        try self.pushInfo(binary.left.location, "left operand is of type '{s}'", .{prettyPrintType(left_type)});
-                        try self.pushInfo(binary.right.location, "right operand is of type '{s}'", .{prettyPrintType(right_type)});
-                        return error.Invalid;
-                    }
-                    if (left_type.primitive != right_type.primitive) {
-                        try self.pushErr(expression.location, "binary operator '{}' requires operands of the same type", .{binary.op});
-                        try self.pushInfo(binary.left.location, "left operand is of type '{s}'", .{prettyPrintType(left_type)});
-                        try self.pushInfo(binary.right.location, "right operand is of type '{s}'", .{prettyPrintType(right_type)});
-                        return error.Invalid;
-                    }
-                    binary.result_type = Primitives.bool_type;
-                    expression.typ = binary.result_type;
-                    expression.location = binary.left.location.merge(binary.right.location);
-                },
-                .slash_slash => {
-                    // rhs needs to be an unsigned integer
-                    if (right_type != .primitive or !right_type.primitive.isInteger() or right_type.primitive.isSigned()) {
-                        try self.pushErr(expression.location, "binary operator '{}' requires right operand which is signed", .{binary.op});
-                        try self.pushInfo(binary.right.location, "right operand is of type '{s}'", .{prettyPrintType(right_type)});
-                        return error.Invalid;
-                    }
-                    binary.result_type = right_type;
-                    expression.typ = binary.result_type;
-                    expression.location = binary.left.location.merge(binary.right.location);
-                },
-                .ampersand, .pipe, .caret, .less_less, .greater_greater => {
-                    // lhs needs to be an unsigned integer
-                    if (left_type != .primitive or !left_type.primitive.isInteger() or left_type.primitive.isSigned()) {
-                        try self.pushErr(expression.location, "binary operator '{}' requires left operand which is signed", .{binary.op});
-                        try self.pushInfo(binary.left.location, "left operand is of type '{s}'", .{prettyPrintType(left_type)});
-                        return error.Invalid;
-                    }
-                    // rhs needs to be an unsigned integer
-                    if (right_type != .primitive or !right_type.primitive.isInteger() or right_type.primitive.isSigned()) {
-                        try self.pushErr(expression.location, "binary operator '{}' requires right operand which is signed", .{binary.op});
-                        try self.pushInfo(binary.right.location, "right operand is of type '{s}'", .{prettyPrintType(right_type)});
-                        return error.Invalid;
-                    }
-                    binary.result_type = left_type;
-                    expression.typ = binary.result_type;
-                    expression.location = binary.left.location.merge(binary.right.location);
-                },
-                .@"and", .@"or" => {
-                    if (left_type != .primitive or !left_type.primitive.isBool()) {
-                        try self.pushErr(expression.location, "binary operator '{}' requires left operand which is a boolean", .{binary.op});
-                        try self.pushInfo(binary.left.location, "left operand is of type '{s}'", .{prettyPrintType(left_type)});
-                        return error.Invalid;
-                    }
-                    if (right_type != .primitive or !right_type.primitive.isBool()) {
-                        try self.pushErr(expression.location, "binary operator '{}' requires right operand which is a boolean", .{binary.op});
-                        try self.pushInfo(binary.right.location, "right operand is of type '{s}'", .{prettyPrintType(right_type)});
-                        return error.Invalid;
-                    }
-                    binary.result_type = Primitives.bool_type;
-                    expression.typ = binary.result_type;
-                    expression.location = binary.left.location.merge(binary.right.location);
-                },
-                else => unreachable,
-            }
+pub fn checkStatement(self: *Self, stmt: *ast.Statement) ErrorSet!void {
+    switch (stmt.variant) {
+        .expression => |expr| try self.checkExpression(expr),
+        .declaration => |*decl| try self.checkDeclaration(decl),
+        .@"if" => |*if_stmt| try self.checkIfStatement(if_stmt),
+        .@"while" => |while_stmt| try self.checkWhileStatement(while_stmt),
+        .@"for" => |for_stmt| try self.checkForStatement(for_stmt),
+        .@"return" => |return_expr| if (return_expr) |expr| try self.checkExpression(expr),
+        // .match => |match_stmt| try self.checkMatchStatement(match_stmt),
+        // .assignment => |assign| try self.checkAssignment(assign),
+        else => {
+            try self.pushErr(stmt.location, "Unhandled statement type in type checker {s}", .{@tagName(stmt.variant)});
+            return error.Invalid;
         },
-        .unary => |*unary| {
-            try self.checkExpression(unary.operand);
-            switch (unary.op) {
-                .minus => {
-                    const operand_type = try self.getTypeFromExpression(unary.operand);
-                    if (operand_type != .primitive and operand_type.primitive.isBool()) {
-                        try self.pushErr(expression.location, "unary operator '{}' requires operand with a number type", .{unary.op});
-                        try self.pushInfo(unary.operand.location, "operand is of type '{s}'", .{prettyPrintType(operand_type)});
-                        return error.Invalid;
-                    }
-                    unary.result_type = operand_type;
-                    expression.typ = unary.result_type;
-                },
-                .bang => {
-                    const operand_type = try self.getTypeFromExpression(unary.operand);
-                    if (operand_type != .primitive and !operand_type.primitive.isBool()) {
-                        try self.pushErr(expression.location, "unary operator '{}' requires operand with a boolean type", .{unary.op});
-                        try self.pushInfo(unary.operand.location, "operand is of type '{s}'", .{prettyPrintType(operand_type)});
-                        return error.Invalid;
-                    }
-                    unary.result_type = Primitives.bool_type;
-                    expression.typ = unary.result_type;
-                },
-                .tilde => {
-                    const operand_type = try self.getTypeFromExpression(unary.operand);
-                    if (operand_type != .primitive and !operand_type.primitive.isInteger()) {
-                        try self.pushErr(expression.location, "unary operator '{}' requires operand with an integer type", .{unary.op});
-                        try self.pushInfo(unary.operand.location, "operand is of type '{s}'", .{prettyPrintType(operand_type)});
-                        return error.Invalid;
-                    }
-                    unary.result_type = operand_type;
-                    expression.typ = unary.result_type;
-                },
-                else => unreachable,
-            }
+    }
+}
+
+pub fn checkExpression(self: *Self, expr: *ast.Expression) ErrorSet!void {
+    switch (expr.variant) {
+        .integer_literal => |int_lit| {
+            expr.typ = try inferIntegerLiteralType(int_lit);
         },
+        .float_literal => expr.typ = &Primitives.f64_type,
+        .boolean_literal => expr.typ = &Primitives.bool_type,
+        .string_literal => expr.typ = &Primitives.string_type,
+        .identifier => |ident| try self.checkIdentifier(expr, ident),
+        .binary => |bin| try self.checkBinaryExpression(expr, bin),
+        .unary => |un| try self.checkUnaryExpression(expr, un),
+        .call => |call| try self.checkCallExpression(expr, call),
+        // .structure_literal => |struct_lit| try self.checkStructureLiteral(expr, struct_lit),
+        .function => |func| try self.checkFunction(expr, func),
         .block => |block| {
-            try self.block_stack.append(self.allocator, expression);
-            defer _ = self.block_stack.pop();
-
-            for (block.statements) |statement| {
-                try self.checkStatement(statement);
-            }
-
-            // TODO: get all the exit points and check they all return the same type
-        },
-        .typ => |typ| {
-            try self.checkType(typ);
-            expression.typ = Primitives.type_type;
-        },
-        .identifier => |identifier| {
-            if (std.mem.eql(u8, identifier, "_")) {
-                if (self.current_pipeline) |pipeline| {
-                    expression.typ = pipeline.variant.pipeline.result_type;
-                    return;
-                } else {
-                    try self.pushErr(expression.location, "use of '_' outside of pipeline", .{});
-                    return error.Invalid;
-                }
-            }
-            if (Primitives.lookup(identifier)) |typ| {
-                expression.typ = Primitives.type_type;
-                expression.variant = .{
-                    .typ = typ,
-                };
-                return;
-            }
-            if (self.symbols.lookup(identifier)) |symbol| {
-                if (!symbol.mutable and self.is_mutable_access) {
-                    try self.pushErr(expression.location, "use of immutable symbol in assignment context", .{});
-                    return error.Invalid;
-                }
-                expression.typ = symbol.typ;
-                return;
-            }
-            try self.pushErr(expression.location, "undeclared identifier '{s}'", .{identifier});
-        },
-        .function => |function| {
-            try self.checkType(function.typ);
             try self.symbols.enterScope(self.allocator);
             defer self.symbols.exitScope();
 
-            const old_function = self.current_function;
-            self.current_function = expression;
-            defer {
-                self.current_function = old_function;
+            for (block.statements) |stmt| {
+                try self.checkStatement(stmt);
             }
 
-            for (function.typ.function.parameters) |*field| {
-                try self.checkFunctionParameterDeclaration(field);
+            if (block.expression) |expr| {
+                try self.checkExpression(expr);
+                expr.typ = block.typ;
             }
+        },
+        // Add other expression types as needed
+        else => {
+            try self.pushErr(expr.location, "Unhandled expression type in type checker: {s}", .{@tagName(expr.variant)});
+            return error.Invalid;
+        },
+    }
+}
 
-            if (function.body) |body| {
-                try self.checkExpression(body);
-                // TODO: check return type is the same as function body return type
+fn inferIntegerLiteralType(int_lit: ast.IntegerLiteral) ErrorSet!*const ast.Type {
+    if (int_lit.negative) {
+        return if (int_lit.value <= std.math.maxInt(i32)) &Primitives.i32_type else &Primitives.i64_type;
+    } else {
+        return if (int_lit.value <= std.math.maxInt(u32)) &Primitives.u32_type else &Primitives.u64_type;
+    }
+}
+
+fn isNumericType(typ: *const ast.Type) bool {
+    return typ.* == .primitive and switch (typ.primitive) {
+        .i8, .i16, .i32, .i64, .u8, .u16, .u32, .u64, .f32, .f64 => true,
+        else => false,
+    };
+}
+
+fn promoteNumericTypes(left: *const ast.Type, right: *const ast.Type) ErrorSet!*const ast.Type {
+    if (left == right) {
+        return left;
+    }
+
+    inline for (.{
+        &Primitives.f64_type,
+        &Primitives.f32_type,
+        &Primitives.i64_type,
+        &Primitives.i32_type,
+        &Primitives.i16_type,
+        &Primitives.i8_type,
+        &Primitives.u64_type,
+        &Primitives.u32_type,
+        &Primitives.u16_type,
+        &Primitives.u8_type,
+    }) |typ| {
+        if (left == typ or right == typ) {
+            return typ;
+        }
+    }
+
+    return error.Invalid;
+}
+
+fn typesEqual(self: *Self, left: *const ast.Type, right: *const ast.Type) bool {
+    self.checkExpression(left.expression) catch return false;
+    self.checkExpression(right.expression) catch return false;
+
+    if (left == right) {
+        return true;
+    }
+
+    const left_tag: ast.TypeKind = std.meta.activeTag(left.*);
+    const right_tag: ast.TypeKind = std.meta.activeTag(right.*);
+
+    if (left_tag != right_tag) {
+        return false;
+    }
+
+    switch (left.*) {
+        .primitive => |left_primitive| {
+            if (left_primitive != right.primitive) {
+                return false;
             }
+        },
+        .pointer => |left_pointer| {
+            if (!self.typesEqual(left_pointer.element, right.pointer.element)) {
+                return false;
+            }
+        },
+        .slice => |left_slice| {
+            if (left_slice.mutable != right.slice.mutable) {
+                return false;
+            }
+            if (!self.typesEqual(left_slice.element, right.slice.element)) {
+                return false;
+            }
+        },
+        .array => |left_array| {
+            if (left_array.length != right.array.length) {
+                return false;
+            }
+            if (!self.typesEqual(left_array.element, right.array.element)) {
+                return false;
+            }
+        },
+        .optional => |left_optional| {
+            if (!self.typesEqual(left_optional, right.optional)) {
+                return false;
+            }
+        },
+        .function => |left_function| {
+            if (left_function.parameters.len != right.function.parameters.len) {
+                return false;
+            }
+            for (left_function.parameters, right.function.parameters) |left_param, right_param| {
+                if (!self.typesEqual(left_param.typ.?, right_param.typ.?)) {
+                    return false;
+                }
+            }
+            if (left_function.return_type == null and right.function.return_type == null) {
+                return true;
+            }
+            if (left_function.return_type != right.function.return_type) {
+                return false;
+            }
+        },
+        .expression => {
+            unreachable;
+        },
+        else => {},
+    }
 
-            expression.typ = function.typ.*;
+    return true;
+}
+
+fn unifyTypes(self: *Self, left: *const ast.Type, right: *const ast.Type) ErrorSet!*const ast.Type {
+    if (left == right) {
+        return left;
+    }
+
+    const left_tag: ast.TypeKind = std.meta.activeTag(left.*);
+    const right_tag: ast.TypeKind = std.meta.activeTag(right.*);
+
+    if (left_tag != right_tag) {
+        return error.Invalid;
+    }
+
+    switch (left.*) {
+        .primitive => |left_primitive| {
+            if (left_primitive != right.primitive) {
+                return error.Invalid;
+            }
+        },
+        .pointer => |left_pointer| {
+            if (!self.typesEqual(left_pointer.element, right.pointer.element)) {
+                return error.Invalid;
+            }
+        },
+        .slice => |left_slice| {
+            if (left_slice.mutable != right.slice.mutable) {
+                return error.Invalid;
+            }
+            if (!self.typesEqual(left_slice.element, right.slice.element)) {
+                return error.Invalid;
+            }
+        },
+        .array => |left_array| {
+            if (left_array.length != right.array.length) {
+                return error.Invalid;
+            }
+            if (!self.typesEqual(left_array.element, right.array.element)) {
+                return error.Invalid;
+            }
+        },
+        .optional => |left_optional| {
+            if (!self.typesEqual(left_optional, right.optional)) {
+                return error.Invalid;
+            }
+        },
+        .function => |left_function| {
+            if (left_function.parameters.len != right.function.parameters.len) {
+                return error.Invalid;
+            }
+            for (left_function.parameters, right.function.parameters) |left_param, right_param| {
+                if (!self.typesEqual(left_param.typ.?, right_param.typ.?)) {
+                    return error.Invalid;
+                }
+            }
+            if (left_function.return_type == null and right.function.return_type == null) {
+                return left;
+            }
+            if (left_function.return_type != right.function.return_type) {
+                return error.Invalid;
+            }
+        },
+        .expression => {
+            unreachable;
+        },
+        else => {},
+    }
+
+    return left;
+}
+
+fn checkIdentifier(self: *Self, expr: *ast.Expression, ident: []const u8) ErrorSet!void {
+    while (expr.variant == .identifier) {
+        if (Primitives.lookup(ident)) |got| {
+            expr.typ = &Primitives.type_type;
+            expr.variant = .{ .typ = got };
+            return;
+        }
+        if (self.symbols.lookup(ident)) |got| {
+            expr.typ = got.typ;
+            expr.variant = if (got.expression) |inner_expr| inner_expr.variant else .undefined;
+            continue;
+        }
+        try self.pushErr(expr.location, "Unknown identifier '{s}'", .{ident});
+    }
+}
+
+fn canConstantFoldBinary(bin: ast.BinaryOp) bool {
+    const left_tag: ast.ExpressionKind = std.meta.activeTag(bin.left.variant);
+    const right_tag: ast.ExpressionKind = std.meta.activeTag(bin.right.variant);
+    if (left_tag != right_tag) {
+        return false;
+    }
+
+    switch (left_tag) {
+        .integer_literal => {
+            switch (bin.op) {
+                .plus, .minus, .star, .slash => return true,
+                // .slash_slash => {
+                //     if (bin.right.variant.integer_literal.value == 0 or bin.left.variant.integer_literal.negative) {
+                //         return false;
+                //     }
+                //     return true;
+                // },
+                else => return false,
+            }
         },
         .float_literal => {
-            expression.typ = Primitives.f32_type;
-        },
-        .integer_literal => |literal| {
-            expression.typ = if (literal.signed) Primitives.i32_type else Primitives.u32_type;
+            switch (bin.op) {
+                .plus, .minus, .star, .slash => return true,
+                else => return false,
+            }
         },
         .boolean_literal => {
-            expression.typ = Primitives.bool_type;
+            switch (bin.op) {
+                .equal, .bang_equal, .@"and", .@"or" => return true,
+                else => return false,
+            }
         },
-        .string_literal => {
-            expression.typ = Primitives.string_type;
+        else => return false,
+    }
+}
+
+fn constantFoldBinary(expr: *ast.Expression, bin: ast.BinaryOp) void {
+    switch (bin.left.variant) {
+        .integer_literal => {
+            switch (bin.op) {
+                .plus, .minus => {
+                    const invert_rhs_sign = bin.op == .minus;
+
+                    const lhs_value = bin.left.variant.integer_literal.value;
+                    const rhs_value = bin.right.variant.integer_literal.value;
+
+                    const lhs_negative = bin.left.variant.integer_literal.negative;
+                    const rhs_negative = if (invert_rhs_sign)
+                        !bin.right.variant.integer_literal.negative
+                    else
+                        bin.right.variant.integer_literal.negative;
+
+                    // situation 1, lhs > 0, rhs > 0
+                    // situation 2, lhs < 0, rhs < 0
+                    // situation 3, lhs > 0, rhs < 0
+                    // situation 4, lhs < 0, rhs > 0
+                    // situation 5, lhs == 0, rhs == 0
+
+                    const result_value: u64, const result_negative: bool = result: {
+                        if (lhs_value == 0) break :result .{ lhs_value, lhs_negative };
+                        if (rhs_value == 0) break :result .{ rhs_value, rhs_negative };
+
+                        if (!lhs_negative and !rhs_negative) {
+                            break :result .{ lhs_value +| rhs_value, false };
+                        }
+                        if (lhs_negative and rhs_negative) {
+                            break :result .{ lhs_value +| rhs_value, true };
+                        }
+                        if (!lhs_negative and rhs_negative) {
+                            if (lhs_value > rhs_value) {
+                                break :result .{ lhs_value -| rhs_value, false };
+                            } else {
+                                break :result .{ rhs_value -| lhs_value, true };
+                            }
+                        }
+                        if (lhs_negative and !rhs_negative) {
+                            if (lhs_value > rhs_value) {
+                                break :result .{ lhs_value -| rhs_value, true };
+                            } else {
+                                break :result .{ rhs_value -| lhs_value, false };
+                            }
+                        }
+                        unreachable;
+                    };
+
+                    expr.variant = .{
+                        .integer_literal = .{
+                            .value = result_value,
+                            .negative = result_negative,
+                        },
+                    };
+                },
+                .star => {
+                    const lhs_value = bin.left.variant.integer_literal.value;
+                    const rhs_value = bin.right.variant.integer_literal.value;
+
+                    const lhs_negative = bin.left.variant.integer_literal.negative;
+                    const rhs_negative = bin.right.variant.integer_literal.negative;
+
+                    const result_value: u64, const result_negative: bool = result: {
+                        if (lhs_value == 0 or rhs_value == 0) break :result .{ 0, false };
+
+                        if (!lhs_negative and !rhs_negative) {
+                            break :result .{ lhs_value * rhs_value, false };
+                        }
+                        if (lhs_negative and rhs_negative) {
+                            break :result .{ lhs_value * rhs_value, false };
+                        }
+                        if (!lhs_negative and rhs_negative) {
+                            break :result .{ lhs_value * rhs_value, true };
+                        }
+                        if (lhs_negative and !rhs_negative) {
+                            break :result .{ lhs_value * rhs_value, true };
+                        }
+                        unreachable;
+                    };
+
+                    expr.variant = .{
+                        .integer_literal = .{
+                            .value = result_value,
+                            .negative = result_negative,
+                        },
+                    };
+                },
+                // .slash_slash => {
+                //     const lhs_value = bin.left.variant.integer_literal.value;
+                //     const rhs_value = bin.right.variant.integer_literal.value;
+
+                //     const result_value = lhs_value / rhs_value;
+
+                //     expr.variant = .{
+                //         .integer_literal = .{
+                //             .value = result_value,
+                //             .negative = false,
+                //         },
+                //     };
+                // },
+                .slash => {
+                    // convert to floats
+                    const lhs_value: f64 = @floatFromInt(bin.left.variant.integer_literal.value);
+                    const rhs_value: f64 = @floatFromInt(bin.right.variant.integer_literal.value);
+
+                    const result_value = lhs_value / rhs_value;
+
+                    expr.variant = .{
+                        .float_literal = result_value,
+                    };
+                },
+                else => unreachable,
+            }
         },
-        .structure_literal => |literal| {
-            if (literal.explicit_type) |got_typ| {
-                var location: ?ast.Location = null;
-                const typ = switch (got_typ) {
-                    .expression => |type_expression| blk: {
-                        location = type_expression.location;
-                        try self.resolveExpression(type_expression);
-                        break :blk type_expression.variant.typ.*;
-                    },
-                    .typ => |this_typ| blk: {
-                        break :blk this_typ;
+        .float_literal => {
+            const lhs_value = bin.left.variant.float_literal;
+            const rhs_value = bin.right.variant.float_literal;
+
+            const result_value: f64 = result: {
+                switch (bin.op) {
+                    .plus => break :result lhs_value + rhs_value,
+                    .minus => break :result lhs_value - rhs_value,
+                    .star => break :result lhs_value * rhs_value,
+                    .slash => break :result lhs_value / rhs_value,
+                    else => unreachable,
+                }
+            };
+
+            expr.variant = .{
+                .float_literal = result_value,
+            };
+        },
+        .boolean_literal => {
+            const lhs_value = bin.left.variant.boolean_literal;
+            const rhs_value = bin.right.variant.boolean_literal;
+
+            const result_value: bool = result: {
+                switch (bin.op) {
+                    .equal => break :result lhs_value == rhs_value,
+                    .bang_equal => break :result lhs_value != rhs_value,
+                    .@"and" => break :result lhs_value and rhs_value,
+                    .@"or" => break :result lhs_value or rhs_value,
+                    else => unreachable,
+                }
+            };
+
+            expr.variant = .{
+                .boolean_literal = result_value,
+            };
+        },
+        else => unreachable,
+    }
+}
+
+fn checkBinaryExpression(self: *Self, expr: *ast.Expression, bin: ast.BinaryOp) ErrorSet!void {
+    try self.checkExpression(bin.left);
+    try self.checkExpression(bin.right);
+
+    if (bin.left.typ == null or bin.right.typ == null) {
+        try self.pushErr(expr.location, "Unable to infer types for binary expression", .{});
+        return;
+    }
+
+    switch (bin.op) {
+        .plus, .minus, .star, .slash => {
+            if (isNumericType(bin.left.typ.?) and isNumericType(bin.right.typ.?)) {
+                expr.typ = try promoteNumericTypes(bin.left.typ.?, bin.right.typ.?);
+            } else {
+                try self.pushErr(expr.location, "Invalid operands for arithmetic operator", .{});
+            }
+        },
+        .equal, .bang_equal => {
+            if (self.typesEqual(bin.left.typ.?, bin.right.typ.?)) {
+                expr.typ = &Primitives.bool_type;
+            } else {
+                try self.pushErr(expr.location, "Incompatible types for equality comparison", .{});
+            }
+        },
+        .less, .less_equal, .greater, .greater_equal => {
+            if (isNumericType(bin.left.typ.?) and isNumericType(bin.right.typ.?)) {
+                expr.typ = &Primitives.bool_type;
+            } else {
+                try self.pushErr(expr.location, "Invalid operands for comparison operator", .{});
+            }
+        },
+        .@"and", .@"or" => {
+            if (self.typesEqual(bin.left.typ.?, &Primitives.bool_type) and self.typesEqual(bin.right.typ.?, &Primitives.bool_type)) {
+                expr.typ = &Primitives.bool_type;
+            } else {
+                try self.pushErr(expr.location, "Invalid operands for logical operator", .{});
+            }
+        },
+        else => try self.pushErr(expr.location, "Unhandled binary operator", .{}),
+    }
+
+    // Perform Value folding
+    if (canConstantFoldBinary(bin)) {
+        constantFoldBinary(expr, bin);
+    }
+}
+
+fn canConstantFoldUnary(un: ast.UnaryOp) bool {
+    switch (un.op) {
+        .minus => {
+            switch (un.operand.variant) {
+                .integer_literal => return true,
+                .float_literal => return true,
+                else => return false,
+            }
+        },
+        .bang => {
+            switch (un.operand.variant) {
+                .boolean_literal => return true,
+                else => return false,
+            }
+        },
+        else => return false,
+    }
+}
+
+fn constantFoldUnary(expr: *ast.Expression, un: ast.UnaryOp) void {
+    switch (un.op) {
+        .minus => {
+            switch (un.operand.variant) {
+                .integer_literal => {
+                    const operand = un.operand.variant.integer_literal;
+                    expr.variant = .{
+                        .integer_literal = .{
+                            .value = operand.value,
+                            .negative = !operand.negative,
+                        },
+                    };
+                },
+                .float_literal => {
+                    const operand = un.operand.variant.float_literal;
+                    expr.variant = .{
+                        .float_literal = -operand,
+                    };
+                },
+                else => unreachable,
+            }
+        },
+        .bang => {
+            switch (un.operand.variant) {
+                .boolean_literal => {
+                    const operand = un.operand.variant.boolean_literal;
+                    expr.variant = .{
+                        .boolean_literal = !operand,
+                    };
+                },
+                else => unreachable,
+            }
+        },
+        else => unreachable,
+    }
+}
+
+fn checkUnaryExpression(self: *Self, expr: *ast.Expression, un: ast.UnaryOp) ErrorSet!void {
+    try self.checkExpression(un.operand);
+
+    if (un.operand.typ == null) {
+        try self.pushErr(expr.location, "Unable to infer type for unary expression", .{});
+        return;
+    }
+
+    switch (un.op) {
+        .minus => {
+            if (isNumericType(un.operand.typ.?)) {
+                expr.typ = un.operand.typ;
+            } else {
+                try self.pushErr(expr.location, "Invalid operand for unary minus", .{});
+            }
+        },
+        .bang => {
+            if (self.typesEqual(un.operand.typ.?, &Primitives.bool_type)) {
+                expr.typ = &Primitives.bool_type;
+            } else {
+                try self.pushErr(expr.location, "Invalid operand for logical not", .{});
+            }
+        },
+        else => try self.pushErr(expr.location, "Unhandled unary operator", .{}),
+    }
+
+    // Perform Value folding
+    if (canConstantFoldUnary(un)) {
+        constantFoldUnary(expr, un);
+    }
+}
+
+fn checkCallExpression(self: *Self, expr: *ast.Expression, call: ast.Call) ErrorSet!void {
+    try self.checkExpression(call.callee);
+
+    if (call.callee.typ == null) {
+        try self.pushErr(expr.location, "Unable to infer type for call expression", .{});
+        return;
+    }
+
+    if (call.callee.typ.?.* != .function) {
+        try self.pushErr(expr.location, "Attempted to call non-function type", .{});
+        return;
+    }
+
+    const func_type = call.callee.typ.?.function;
+
+    if (call.arguments.len != func_type.parameters.len) {
+        try self.pushErr(expr.location, "Incorrect number of arguments for function call", .{});
+        return;
+    }
+
+    for (call.arguments, func_type.parameters) |arg, parameter| {
+        try self.checkExpression(arg);
+
+        if (arg.typ == null) {
+            try self.pushErr(expr.location, "Unable to infer type for argument", .{});
+            return;
+        }
+
+        if (!self.typesEqual(arg.typ.?, parameter.typ.?)) {
+            try self.pushErr(arg.location, "Argument type mismatch", .{});
+            return;
+        }
+    }
+
+    expr.typ = func_type.return_type;
+}
+
+fn checkFunction(self: *Self, expr: *ast.Expression, func: ast.Function) ErrorSet!void {
+    try self.symbols.enterScope(self.allocator);
+    defer self.symbols.exitScope();
+
+    for (func.typ.function.parameters) |param| {
+        try self.symbols.add(self.allocator, param.key.variant.identifier, .{
+            .mutable = false,
+            .typ = param.typ.?,
+            .location = param.location,
+        });
+    }
+
+    if (func.body) |body|
+        try self.checkExpression(body);
+    expr.typ = func.typ;
+}
+
+fn checkDeclaration(self: *Self, decl: *ast.DeclarationStatement) ErrorSet!void {
+    const init = decl.initialiser;
+    try self.checkExpression(init);
+    if (decl.typ) |typ| {
+        if (!self.typesEqual(typ, init.typ.?)) {
+            try self.pushErr(init.location, "Initialiser type does not match declared type", .{});
+        }
+    } else {
+        decl.typ = init.typ;
+    }
+
+    try self.symbols.add(self.allocator, decl.identifier, .{
+        .mutable = decl.mutable,
+        .expression = init,
+        .location = init.location,
+        .typ = decl.typ.?,
+    });
+}
+
+fn checkIfStatement(self: *Self, if_stmt: *ast.IfStatement) ErrorSet!void {
+    try self.checkExpression(if_stmt.condition);
+    const condition_typ = if_stmt.condition.typ.?;
+    if (!self.typesEqual(condition_typ, &Primitives.bool_type) and !(condition_typ.* == .optional)) {
+        try self.pushErr(if_stmt.condition.location, "If condition must be a boolean or optional expression", .{});
+    }
+    {
+        try self.symbols.enterScope(self.allocator);
+        defer self.symbols.exitScope();
+
+        if (if_stmt.capture) |capture| {
+            if (condition_typ.* == .primitive) {
+                try self.pushErr(if_stmt.condition.location, "If condition can only capture optionals", .{});
+                return error.Invalid;
+            }
+            // assert only one capture
+            if (capture.len != 1) {
+                try self.pushErr(if_stmt.condition.location, "If statement can only capture one variable", .{});
+                return error.Invalid;
+            }
+            const field = capture[0];
+            try self.symbols.add(self.allocator, field.key.variant.identifier, .{
+                .mutable = false, // Assuming captured variables are immutable
+                .location = field.key.location,
+                .typ = condition_typ,
+            });
+        }
+
+        try self.checkExpression(if_stmt.then_branch);
+    }
+    {
+        try self.symbols.enterScope(self.allocator);
+        defer self.symbols.exitScope();
+        if (if_stmt.else_branch) |else_branch| {
+            try self.checkExpression(else_branch);
+        }
+    }
+
+    // Infer result type if it's an expression-if
+    if (if_stmt.result == null) {
+        if (if_stmt.else_branch) |else_branch| {
+            if_stmt.result = try self.unifyTypes(if_stmt.then_branch.typ.?, else_branch.typ.?);
+        } else {
+            if_stmt.result = &Primitives.unit_type;
+        }
+    }
+}
+
+fn checkWhileStatement(self: *Self, while_stmt: ast.WhileStatement) ErrorSet!void {
+    try self.checkExpression(while_stmt.condition);
+    if (!self.typesEqual(while_stmt.condition.typ.?, &Primitives.bool_type)) {
+        try self.pushErr(while_stmt.condition.location, "While condition must be a boolean expression", .{});
+    }
+
+    try self.symbols.enterScope(self.allocator);
+    defer self.symbols.exitScope();
+
+    try self.checkExpression(while_stmt.body);
+}
+
+fn checkForStatement(self: *Self, for_stmt: ast.ForStatement) ErrorSet!void {
+    try self.symbols.enterScope(self.allocator);
+    defer self.symbols.exitScope();
+
+    if (for_stmt.condition) |condition| {
+        try self.checkExpression(condition);
+        // Check if condition is iterable
+        // This depends on how you've defined iterable types in your language
+    }
+
+    if (for_stmt.capture) |capture| {
+        // assert only one capture
+        if (capture.len != 1) {
+            try self.pushErr(for_stmt.condition.?.location, "For loop can only capture one variable", .{});
+            return error.Invalid;
+        }
+        const field = capture[0];
+        try self.symbols.add(self.allocator, field.key.variant.identifier, .{
+            .mutable = false, // Assuming captured variables in for loops are immutable
+            .typ = for_stmt.condition.?.typ.?,
+            .location = field.key.location,
+        });
+    }
+
+    try self.checkExpression(for_stmt.body);
+}
+
+pub const Value = union(Kind) {
+    integer: ast.IntegerLiteral,
+    float: f64,
+    boolean: bool,
+    string: []const u8,
+    enum_literal: EnumLiteral,
+    structure_literal: StructureLiteral,
+    function: Function,
+    typ: *const Type,
+    nil,
+    undefined,
+    external: External,
+
+    pub const External = struct {
+        value: *const ast.Expression,
+        typ: ?*const Type = null,
+    };
+
+    pub const EnumLiteral = struct {
+        explicit_type: ?*const Type = null,
+        member: []const u8,
+    };
+
+    pub const StructureLiteral = struct {
+        explicit_type: ?*const Type = null,
+        fields: std.StringHashMapUnmanaged(Value),
+    };
+
+    pub const Function = struct {
+        typ: *const Type,
+        block: *const ast.Block,
+    };
+
+    pub const Type = union(TypeKind) {
+        structure: Structure,
+        enumeration: Enumeration,
+        primitive: ast.PrimitiveType,
+        optional: *const Type,
+        pointer: ReferenceType,
+        array: ArrayType,
+        slice: ReferenceType,
+        function: FunctionType,
+    };
+
+    pub const ReferenceType = struct {
+        mutable: bool,
+        element: *const Type,
+    };
+
+    pub const ArrayType = struct {
+        element: *const Type,
+        length: ?Value = null,
+    };
+
+    pub const FunctionType = struct {
+        generics: []const FunctionParam,
+        parameters: []const FunctionParam,
+        return_type: ?*const Type = null,
+    };
+
+    pub const FunctionParam = struct {
+        identifier: []const u8,
+        typ: *const Type,
+    };
+
+    pub const TypeKind = enum {
+        structure,
+        enumeration,
+        primitive,
+        optional,
+        pointer,
+        array,
+        slice,
+        function,
+    };
+
+    pub const Structure = struct {
+        fields: std.StringArrayHashMapUnmanaged(StructureField),
+    };
+
+    pub const StructureField = struct {
+        typ: *const Type,
+        default_value: ?Value = null,
+    };
+
+    pub const Enumeration = struct {
+        members: std.StringArrayHashMapUnmanaged(EnumerationMember),
+    };
+
+    pub const EnumerationMember = struct {
+        value: Value,
+    };
+
+    pub const Kind = enum {
+        integer,
+        float,
+        boolean,
+        string,
+        enum_literal,
+        structure_literal,
+        function,
+        typ,
+        nil,
+        undefined,
+        external,
+    };
+
+    pub fn fromExpression(allocator: std.mem.Allocator, check: *Self, expr: *const ast.Expression, symbols: *const SymbolTable) ErrorSet!Value {
+        switch (expr.variant) {
+            .boolean_literal => |boolean| {
+                return .{
+                    .boolean = boolean,
+                };
+            },
+            .integer_literal => |int_literal| {
+                return .{
+                    .integer = int_literal,
+                };
+            },
+            .float_literal => |float_literal| {
+                return .{
+                    .float = float_literal,
+                };
+            },
+            .string_literal => |string_literal| {
+                return .{
+                    .string = string_literal,
+                };
+            },
+            .enum_literal => |enum_literal| {
+                return .{
+                    .enum_literal = .{
+                        .explicit_type = null,
+                        .member = enum_literal,
                     },
                 };
-                switch (typ) {
-                    .array => |array| {
-                        const array_length = try self.resolveUnsignedIntegerLiteral(array.length orelse {
-                            return error.Invalid;
-                        });
-                        if (literal.fields.len != array_length) {
-                            try self.pushErr(expression.location, "array literal length mismatch", .{});
-                            if (location) |got_location| {
-                                try self.pushInfo(got_location, "expected '{}'", .{array_length});
-                            }
-                            try self.pushInfo(array.length.?.location, "got {}", .{literal.fields.len});
-                            return error.Invalid;
-                        }
-                        for (literal.fields, 0..) |field, index| {
-                            try self.checkExpression(field.key);
-
-                            // ensure same type
-                            self.coerceTo(field.key, array.element.*) catch {
-                                try self.pushErr(field.location, "element {} not coercible", .{index});
-                                return error.Invalid;
-                            };
-                        }
-
-                        expression.typ = array.element.*;
+            },
+            .char_literal => |char_literal| {
+                return .{
+                    .integer = ast.IntegerLiteral{
+                        .value = char_literal,
+                        .negative = false,
                     },
-                    .structure => |structure| {
-                        // check all fields make a hash map
-                        var field_map = std.StringHashMap(ast.Field).init(self.allocator);
-                        defer field_map.deinit();
+                };
+            },
+            .structure_literal => |structure_literal| {
+                var fields = std.StringHashMapUnmanaged(Value){};
+                errdefer fields.deinit(allocator);
 
-                        for (structure.fields) |field| {
-                            try field_map.put(field.key.variant.identifier, field);
-                        }
+                for (structure_literal.fields) |field| {
+                    try fields.put(
+                        allocator,
+                        field.key.variant.identifier,
+                        try fromExpression(allocator, check, field.initialiser.?, symbols),
+                    );
+                }
 
-                        for (literal.fields) |field| {
-                            const field_name = field.key.variant.identifier;
-                            if (field_map.get(field_name)) |to_field| {
-                                self.coerceTo(field.initialiser orelse {
-                                    return error.Invalid;
-                                }, (to_field.typ orelse return error.Invalid).*) catch {
-                                    try self.pushErr(expression.location, "field '{s}' not coercible", .{field_name});
-                                    return error.Invalid;
+                return .{ .structure_literal = .{
+                    .explicit_type = null,
+                    .fields = fields,
+                } };
+            },
+            .typ => |typ| {
+                return .{ .typ = try fromType(allocator, check, typ, symbols) };
+            },
+            .identifier => |identifier| {
+                if (Primitives.lookup(identifier)) |primitive| {
+                    return .{
+                        .typ = fromPrimitiveType(primitive.primitive),
+                    };
+                }
+                if (symbols.lookup(identifier)) |symbol| {
+                    return symbol.value;
+                }
+                return error.Invalid;
+            },
+            .binary => |binary| {
+                const lhs = try fromExpression(allocator, check, binary.left, symbols);
+                const rhs = try fromExpression(allocator, check, binary.right, symbols);
+
+                switch (binary.op) {
+                    // .slash_slash,
+                    // .percent,
+                    // .ampersand,
+                    // .pipe,
+                    // .caret,
+                    // .less,
+                    // .greater,
+                    // .equal_equal,
+                    // .bang_equal,
+                    // .less_equal,
+                    // .greater_equal,
+                    // .less_less,
+                    // .greater_greater,
+                    // .@"and",
+                    // .@"or",
+                    // .@"orelse",
+                    .plus, .minus => {
+                        const invert_rhs_sign = binary.op == .minus;
+                        switch (lhs) {
+                            .integer => {
+                                const lhs_value = lhs.integer.value;
+                                const rhs_value = rhs.integer.value;
+
+                                const lhs_negative = lhs.integer.negative;
+                                const rhs_negative = if (invert_rhs_sign) !rhs.integer.negative else rhs.integer.negative;
+
+                                // situation 1, lhs > 0, rhs > 0
+                                // situation 2, lhs < 0, rhs < 0
+                                // situation 3, lhs > 0, rhs < 0
+                                // situation 4, lhs < 0, rhs > 0
+                                // situation 5, lhs == 0, rhs == 0
+
+                                const result_value: u64, const result_negative: bool = result: {
+                                    if (lhs_value == 0) break :result .{ lhs_value, lhs_negative };
+                                    if (rhs_value == 0) break :result .{ rhs_value, rhs_negative };
+
+                                    if (!lhs_negative and !rhs_negative) {
+                                        break :result .{ lhs_value +| rhs_value, false };
+                                    }
+                                    if (lhs_negative and rhs_negative) {
+                                        break :result .{ lhs_value +| rhs_value, true };
+                                    }
+                                    if (!lhs_negative and rhs_negative) {
+                                        if (lhs_value > rhs_value) {
+                                            break :result .{ lhs_value -| rhs_value, false };
+                                        } else {
+                                            break :result .{ rhs_value -| lhs_value, true };
+                                        }
+                                    }
+                                    if (lhs_negative and !rhs_negative) {
+                                        if (lhs_value > rhs_value) {
+                                            break :result .{ lhs_value -| rhs_value, true };
+                                        } else {
+                                            break :result .{ rhs_value -| lhs_value, false };
+                                        }
+                                    }
+                                    unreachable;
                                 };
-                            } else {
-                                try self.pushErr(expression.location, "field '{s}' not found in structure", .{field_name});
-                                return error.Invalid;
-                            }
 
-                            _ = field_map.remove(field_name);
+                                return .{
+                                    .integer = ast.IntegerLiteral{
+                                        .value = result_value,
+                                        .negative = result_negative,
+                                    },
+                                };
+                            },
+                            .float => {
+                                return .{
+                                    .float = lhs.float + if (invert_rhs_sign) -rhs.float else rhs.float,
+                                };
+                            },
+                            else => {
+                                try check.pushErr(binary.left.location.merge(binary.right.location), "Invalid operands for arithmetic +", .{});
+                                try check.pushInfo(binary.left.location, "Left operand type: {s}", .{@tagName(lhs)});
+                                try check.pushInfo(binary.right.location, "Right operand type: {s}", .{@tagName(rhs)});
+                                return error.Invalid;
+                            },
                         }
+                    },
+                    .star, .slash => {
+                        const one_over = binary.op == .slash;
 
-                        var it = field_map.iterator();
-                        while (it.next()) |entry| {
-                            const field = entry.value_ptr.*;
-                            const field_name = field.key.variant.identifier;
-                            if (field.initialiser == null) {
-                                try self.pushErr(expression.location, "field '{s}' not initialised", .{field_name});
+                        switch (lhs) {
+                            .integer => {
+                                const lhs_value = lhs.integer.value;
+                                const rhs_value = rhs.integer.value;
+
+                                const lhs_negative = lhs.integer.negative;
+                                const rhs_negative = rhs.integer.negative;
+
+                                const result_value: u64, const result_negative: bool = result: {
+                                    if (lhs_value == 0 or rhs_value == 0) break :result .{ 0, false };
+
+                                    if (!lhs_negative and !rhs_negative) {
+                                        break :result .{ lhs_value * rhs_value, false };
+                                    }
+                                    if (lhs_negative and rhs_negative) {
+                                        break :result .{ lhs_value * rhs_value, false };
+                                    }
+                                    if (!lhs_negative and rhs_negative) {
+                                        break :result .{ lhs_value * rhs_value, true };
+                                    }
+                                    if (lhs_negative and !rhs_negative) {
+                                        break :result .{ lhs_value * rhs_value, true };
+                                    }
+                                    unreachable;
+                                };
+
+                                return .{
+                                    .integer = ast.IntegerLiteral{
+                                        .value = result_value,
+                                        .negative = result_negative,
+                                    },
+                                };
+                            },
+                            .float => {
+                                return .{
+                                    .float = lhs.float * if (one_over) 1.0 / rhs.float else rhs.float,
+                                };
+                            },
+                            else => {
+                                try check.pushErr(binary.left.location.merge(binary.right.location), "Invalid operands for arithmetic *", .{});
+                                try check.pushInfo(binary.left.location, "Left operand type: {s}", .{@tagName(lhs)});
+                                try check.pushInfo(binary.right.location, "Right operand type: {s}", .{@tagName(rhs)});
                                 return error.Invalid;
-                            }
+                            },
                         }
                     },
                     else => {
-                        if (location) |got_location| {
-                            try self.pushErr(got_location, "invalid type for structure literal", .{});
-                        } else {
-                            try self.pushErr(expression.location, "invalid type for structure literal", .{});
-                        }
-                        return error.Invalid;
+                        return .{ .external = .{
+                            .value = expr,
+                            .typ = if (expr.typ) |typ| try fromType(allocator, check, typ, symbols) else null,
+                        } };
                     },
                 }
-            }
-        },
-        .pipeline => |*pipeline| {
-            // for now let's just use the initial
-            const old_pipeline = self.current_pipeline;
-            self.current_pipeline = expression;
-            defer {
-                self.current_pipeline = old_pipeline;
-            }
-
-            pipeline.result_type = pipeline.stages[0].typ;
-            for (pipeline.stages[1..]) |stage| {
-                try self.checkExpression(stage);
-                pipeline.result_type = stage.typ;
-            }
-
-            expression.typ = pipeline.result_type;
-        },
-        .field => |*field_access| {
-            try self.checkExpression(field_access.record);
-            const type_from_expression = try self.getTypeFromExpression(field_access.record);
-            const record_type = try self.resolveTypeFromAliasing(type_from_expression);
-            if (record_type == .structure) {
-                for (record_type.structure.fields) |field| {
-                    if (std.mem.eql(u8, field.key.variant.identifier, field_access.field)) {
-                        field_access.result_type = field.typ.?.*;
-                        expression.location = field_access.record.location.merge(field_access.end_location);
-                        expression.typ = field_access.result_type.?;
-                        return;
-                    }
-                }
-                try self.pushErr(expression.location, "field '{s}' not found in structure", .{field_access.field});
-                try self.pushInfo(record_type.structure.location, "declared here", .{});
-                return error.Invalid;
-            } else if (record_type == .enumeration) {
-                for (record_type.enumeration.fields) |field| {
-                    if (std.mem.eql(u8, field.key.variant.identifier, field_access.field)) {
-                        field_access.result_type = record_type;
-                        expression.location = field_access.record.location.merge(field_access.end_location);
-                        expression.typ = field_access.result_type.?;
-                        return;
-                    }
-                }
-            } else {
-                try self.pushErr(expression.location, "field access on non-structure/enumeration type", .{});
-                try self.pushInfo(field_access.record.location, "expected structure/enumeration type, got {s}", .{prettyPrintType(record_type)});
-                return error.Invalid;
-            }
-        },
-        .call => |*call| {
-            try self.checkExpression(call.callee);
-            const callee_type = try self.resolveTypeFromAliasing(try self.getTypeFromExpression(call.callee));
-            if (callee_type == .function) {
-                if (callee_type.function.parameters.len != call.arguments.len) {
-                    try self.pushErr(expression.location, "function call argument count mismatch", .{});
-                    try self.pushInfo(call.callee.location, "expected '{}'", .{callee_type.function.parameters.len});
-                    try self.pushInfo(expression.location, "got '{}'", .{call.arguments.len});
-                    return error.Invalid;
-                }
-                for (call.arguments) |argument| {
-                    try self.checkExpression(argument);
-                }
-                call.result_type = (callee_type.function.return_type orelse &Primitives.unit_type).*;
-                expression.location = call.callee.location.merge(call.arguments[call.arguments.len - 1].location);
-                expression.typ = call.result_type.?;
-            } else {
-                try self.pushErr(expression.location, "call on non-function type", .{});
-                return error.Invalid;
-            }
-        },
-        .subscript => |*subscript| {
-            try self.checkExpression(subscript.array);
-            try self.checkExpression(subscript.index);
-
-            const array_type = try self.resolveTypeFromAliasing(try self.getTypeFromExpression(subscript.array));
-            switch (array_type) {
-                .slice, .array => {
-                    const index_intermediate_type = try self.getTypeFromExpression(subscript.index);
-                    const index_type = try self.resolveTypeFromAliasing(index_intermediate_type);
-                    if (index_type != .primitive or !index_type.primitive.isInteger() or index_type.primitive.isSigned()) {
-                        try self.pushErr(subscript.index.location, "array index must be an unsigned integer", .{});
-                        try self.pushInfo(subscript.index.location, "got '{s}'", .{index_type.primitive.name()});
-                        return error.Invalid;
-                    }
-
-                    if (subscript.index.variant == .integer_literal and array_type == .array) {
-                        const index = try self.resolveUnsignedIntegerLiteral(subscript.index);
-                        const length = try self.resolveUnsignedIntegerLiteral(array_type.array.length.?);
-                        if (index >= length) {
-                            try self.pushErr(subscript.index.location, "array index out of bounds", .{});
-                            try self.pushInfo(null, "expected index < {}", .{length});
-                            return error.Invalid;
-                        }
-                    }
-                    if (array_type == .array) {
-                        subscript.result_type = array_type.array.element.*;
-                        expression.location = subscript.array.location.merge(subscript.end_location);
-                        expression.typ = array_type.array.element.*;
-                    } else {
-                        subscript.result_type = array_type.slice.element.*;
-                        expression.location = subscript.array.location.merge(subscript.end_location);
-                        expression.typ = array_type.slice.element.*;
-                    }
-                },
-                else => {
-                    try self.pushErr(expression.location, "subscript on non-array type", .{});
-                    try self.pushInfo(subscript.array.location, "expected array type, got '{}'", .{array_type});
-                    return error.Invalid;
-                },
-            }
-        },
-        .deref => |*deref| {
-            try self.checkExpression(deref.operand);
-            const type_from_expression = try self.getTypeFromExpression(deref.operand);
-            const deref_type = try self.resolveTypeFromAliasing(type_from_expression);
-            if (deref_type == .pointer) {
-                if (!deref_type.pointer.mutable and self.is_mutable_access) {
-                    try self.pushErr(expression.location, "dereference of immutable pointer in assignment context", .{});
-                    return error.Invalid;
-                }
-
-                deref.result_type = deref_type.pointer.element.*;
-                expression.typ = deref_type.pointer.element.*;
-            } else {
-                try self.pushErr(expression.location, "deref on non-pointer type", .{});
-                try self.pushInfo(deref.operand.location, "expected pointer type, got '{}'", .{deref_type});
-                return error.Invalid;
-            }
-        },
-        else => {
-            try self.pushInfo(expression.location, "unimplemented expression type '{s}'", .{@tagName(expression.variant)});
-        },
-    }
-}
-
-/// replaces the variant if it can
-pub fn resolveExpression(self: *Self, expression: *ast.Expression) ErrorSet!void {
-    switch (expression.variant) {
-        .identifier => |identifier| {
-            if (Primitives.lookup(identifier)) |primitive| {
-                expression.typ = Primitives.type_type;
-                expression.variant = .{
-                    .typ = primitive,
+                return .{
+                    .typ = try fromType(allocator, check, binary.typ, symbols),
                 };
-            } else if (self.symbols.lookup(identifier)) |symbol| {
-                expression.typ = symbol.typ;
-                expression.variant = symbol.expression.variant;
-            } else {
-                try self.pushErr(expression.location, "undeclared identifier '{s}'", .{identifier});
+            },
+            .function => {
+                return .{
+                    .typ = try fromType(allocator, check, expr.typ, symbols),
+                };
+            },
+            else => {
+                try check.pushErr(expr.location, "Unhandled expression type in type checker: {s}", .{@tagName(expr.variant)});
                 return error.Invalid;
-            }
-        },
-        else => {
-            try self.checkExpression(expression);
-        },
+            },
+            // unary: UnaryOp,
+            // call: Call,
+            // subscript: Subscript,
+            // deref: Deref,
+            // field: FieldAccess,
+            // function: Function,
+            // lambda: Lambda,
+            // block: Block,
+            // pipeline: Pipeline,
+            // undefined: void,
+            // nil: void,
+        }
+        return error.Invalid;
     }
-}
 
-pub fn resolveUnsignedIntegerLiteral(_: Self, expression: *ast.Expression) ErrorSet!u64 {
-    if (expression.variant == .integer_literal) {
-        return expression.variant.integer_literal.value;
-    }
-    return error.Invalid;
-}
+    pub fn fromType(allocator: std.mem.Allocator, check: *Self, typ: *const ast.Type, symbols: *const SymbolTable) ErrorSet!*const Type {
+        switch (typ.*) {
+            .expression => |expression| {
+                return (try fromExpression(allocator, check, expression, symbols)).typ;
+            },
+            .structure => |structure| {
+                var fields = std.StringArrayHashMapUnmanaged(StructureField){};
+                errdefer fields.deinit(allocator);
 
-pub fn getTypeFromExpression(_: Self, expression: *ast.Expression) ErrorSet!ast.Type {
-    if (expression.typ) |typ| {
-        return typ;
-    }
-    return error.Invalid;
-}
-
-pub fn prettyPrintType(typ: ast.Type) []const u8 {
-    switch (typ) {
-        .primitive => return switch (typ.primitive) {
-            .i8 => "i8",
-            .i16 => "i16",
-            .i32 => "i32",
-            .i64 => "i64",
-            .u8 => "u8",
-            .u16 => "u16",
-            .u32 => "u32",
-            .u64 => "u64",
-            .f32 => "f32",
-            .f64 => "f64",
-            .bool => "bool",
-            .unit => "unit",
-            .typ => "type",
-        },
-        .pointer => return "pointer",
-        .array => return "array",
-        .function => return "function",
-        .structure => return "structure",
-        .enumeration => return "enumeration",
-        .optional => return "optional",
-        .slice => return "slice",
-        .expression => return "expression",
-    }
-}
-
-pub fn checkStatement(self: *Self, statement: *ast.Statement) ErrorSet!void {
-    switch (statement.variant) {
-        .expression => |expression| {
-            try self.checkExpression(expression);
-        },
-        .declaration => |*declaration| {
-            try self.checkDeclaration(statement.location, declaration);
-        },
-        .@"return" => |return_stmt| {
-            if (return_stmt) |got| {
-                try self.checkExpression(got);
-            }
-
-            if (self.current_function) |function| {
-                const got_return_type: ?*const ast.Type = if (function.variant.function.typ.function.return_type) |typ| typ else null;
-                const return_type = if (got_return_type) |typ| typ.* else Primitives.unit_type;
-                const resolved_return_type = try self.resolveTypeFromAliasing(return_type);
-                if (return_stmt) |got| {
-                    self.coerceTo(got, resolved_return_type) catch |err| {
-                        try self.pushInfo(function.location, "expected return type '{s}'", .{switch (return_type) {
-                            .primitive => return_type.primitive.name(),
-                            .expression => |expression| expression.variant.identifier,
-                            else => "unknown type",
-                        }});
-                        try self.pushInfo(got.location, "got", .{});
-                        return err;
-                    };
-                } else if (resolved_return_type != .primitive or resolved_return_type.primitive != .unit) {
-                    try self.pushErr(statement.location, "expected return value", .{});
-                    return error.Invalid;
-                }
-            } else {
-                try self.pushErr(statement.location, "return statement outside of function", .{});
-                return error.Invalid;
-            }
-        },
-        .assignment => |assignment| {
-            // resolve the lhs
-            {
-                const old_assignment = self.is_mutable_access;
-                self.is_mutable_access = true;
-                defer self.is_mutable_access = old_assignment;
-                try self.checkExpression(assignment.target);
-            }
-            try self.checkExpression(assignment.value);
-
-            switch (assignment.kind) {
-                .equal => {
-                    self.coerceTo(assignment.value, try self.getTypeFromExpression(assignment.target)) catch {
-                        try self.pushErr(assignment.target.location, "assignment type mismatch", .{});
-                        return;
-                    };
-                },
-                else => {
-                    try self.pushErr(statement.location, "unimplemented assignment kind '{s}'", .{@tagName(assignment.kind)});
-                    return;
-                },
-            }
-        },
-        .@"if" => |*if_statement| {
-            // condition: *Expression,
-            // capture: ?[]Field = null,
-            // then_branch: *Expression,
-            // else_branch: ?*Expression = null,
-
-            try self.checkExpression(if_statement.condition);
-
-            var resulting_type: ?ast.Type = null;
-            {
-                try self.symbols.enterScope(self.allocator);
-                defer self.symbols.exitScope();
-
-                if (if_statement.capture) |capture| {
-                    // only one capture
-                    if (capture.len != 1) {
-                        try self.pushErr(statement.location, "if statement capture must have exactly one element", .{});
-                        return error.Invalid;
-                    }
-                    try self.checkFunctionParameterDeclaration(&capture[0]);
+                for (structure.fields) |field| {
+                    try fields.put(allocator, field.key.variant.identifier, .{
+                        .typ = try fromType(allocator, check, field.typ.?, symbols),
+                    });
                 }
 
-                try self.checkExpression(if_statement.then_branch);
-                if (if_statement.then_branch.typ) |typ| {
-                    resulting_type = typ;
-                }
-            }
+                return try allocType(allocator, .{
+                    .structure = .{
+                        .fields = fields,
+                    },
+                });
+            },
+            .enumeration => |enumeration| {
+                var members = std.StringArrayHashMapUnmanaged(EnumerationMember){};
+                errdefer members.deinit(allocator);
 
-            if (if_statement.else_branch) |else_branch| {
-                try self.symbols.enterScope(self.allocator);
-                defer self.symbols.exitScope();
-                try self.checkExpression(else_branch);
-                if (resulting_type) |result| {
-                    self.coerceTo(else_branch, result) catch {
-                        try self.pushErr(else_branch.location, "if statement else branch type mismatch", .{});
-                        return error.Invalid;
-                    };
-                } else {
-                    // type is null, but this this might break into something
-                    if (else_branch.typ) |_| {
-                        try self.pushErr(else_branch.location, "if statement else branch type mismatch", .{});
-                        return error.Invalid;
-                    }
-                }
-            }
-
-            if_statement.result_type = resulting_type;
-        },
-        .@"while" => |while_statement| {
-            try self.checkExpression(while_statement.condition);
-
-            {
-                try self.symbols.enterScope(self.allocator);
-                defer self.symbols.exitScope();
-
-                try self.checkExpression(while_statement.body);
-            }
-        },
-        .@"for" => |for_statement| {
-            // condition: ?*Expression = null,
-            // capture: ?[]Field = null,
-            // body: *Expression,
-            try self.checkExpression(for_statement.condition.?);
-
-            {
-                try self.symbols.enterScope(self.allocator);
-                defer self.symbols.exitScope();
-
-                if (for_statement.capture) |capture| {
-                    for (capture) |*field| {
-                        try self.checkFunctionParameterDeclaration(field);
-                    }
+                for (enumeration.fields) |member| {
+                    try members.put(allocator, member.key.variant.identifier, .{
+                        .value = try fromExpression(allocator, check, member.initialiser.?, symbols),
+                    });
                 }
 
-                try self.checkExpression(for_statement.body);
-            }
-        },
-        .@"continue" => |*continue_statement| {
-            if (self.block_stack.items.len == 0) {
-                try self.pushErr(statement.location, "continue statement outside of block", .{});
-                return error.Invalid;
-            }
+                return try allocType(allocator, .{
+                    .enumeration = .{
+                        .members = members,
+                    },
+                });
+            },
+            .primitive => |primitive| {
+                return fromPrimitiveType(primitive);
+            },
+            .optional => |optional| {
+                return try allocType(allocator, .{
+                    .optional = try fromType(allocator, check, optional, symbols),
+                });
+            },
+            .pointer => |pointer| {
+                return try allocType(allocator, .{
+                    .pointer = .{
+                        .mutable = pointer.mutable,
+                        .element = try fromType(allocator, check, pointer.element, symbols),
+                    },
+                });
+            },
+            .slice => |slice| {
+                return try allocType(allocator, .{
+                    .slice = .{
+                        .mutable = slice.mutable,
+                        .element = try fromType(allocator, check, slice.element, symbols),
+                    },
+                });
+            },
+            .array => |array| {
+                return try allocType(allocator, .{
+                    .array = .{
+                        .element = try fromType(allocator, check, array.element, symbols),
+                        .length = if (array.length) |length| try fromExpression(allocator, check, length, symbols) else null,
+                    },
+                });
+            },
+            .function => |function| {
+                var generics = std.ArrayListUnmanaged(FunctionParam){};
+                errdefer generics.deinit(allocator);
 
-            // check the block stack
-            // if this thing has a label attached then look for a corresponding block,
-            // if it doesn't break at the top block
-            if (continue_statement.label) |search_label| {
-                for (self.block_stack.items) |block| {
-                    if (block.variant.block.label) |got_label| {
-                        if (std.mem.eql(u8, search_label, got_label)) {
-                            continue_statement.resolved_block = block;
-                        }
-                    }
+                for (function.generics) |generic| {
+                    try generics.append(allocator, .{
+                        .identifier = generic.key.variant.identifier,
+                        .typ = try fromType(allocator, check, generic.typ.?, symbols),
+                    });
                 }
-            } else {
-                continue_statement.resolved_block = self.block_stack.getLastOrNull();
-            }
-        },
-        .@"break" => |*break_statement| {
-            if (self.block_stack.items.len == 0) {
-                try self.pushErr(statement.location, "break statement outside of block", .{});
-                return error.Invalid;
-            }
 
-            // check the block stack
-            // if this thing has a label attached then look for a corresponding block,
-            // if it doesn't break at the top block
-            if (break_statement.label) |search_label| {
-                for (self.block_stack.items) |block| {
-                    if (block.variant.block.label) |got_label| {
-                        if (std.mem.eql(u8, search_label, got_label)) {
-                            break_statement.resolved_block = block;
-                        }
-                    }
+                var parameters = std.ArrayListUnmanaged(FunctionParam){};
+                errdefer parameters.deinit(allocator);
+
+                for (function.parameters) |parameter| {
+                    try parameters.append(allocator, .{
+                        .identifier = parameter.key.variant.identifier,
+                        .typ = try fromType(allocator, check, parameter.typ.?, symbols),
+                    });
                 }
-            } else {
-                break_statement.resolved_block = self.block_stack.getLastOrNull();
-            }
-        },
-        .match => |match| {
-            _ = match;
-            // try self.checkExpression(match.expression);
-            // const expression_type = try self.getTypeFromExpression(match.expression);
-            // const resolved_expression_type = try self.resolveTypeFromAliasing(expression_type);
 
-            // // only switch on enums and booleans for now
-            // const got_as_enum: ?ast.Type = if (resolved_expression_type == .primitive) blk: {
-            //     try self.resolveExpression(match.expression);
-            //     if (match.expression.variant.typ.* == .enumeration)
-            //         break :blk match.expression.variant.typ.*;
-            //     break :blk null;
-            // } else null;
-            // const is_boolean = if (resolved_expression_type == .primitive) blk: {
-            //     if (match.expression.variant.typ.* == .primitive and match.expression.variant.typ.primitive == .bool)
-            //         break :blk true;
-            //     break :blk false;
-            // } else false;
-            // if (got_as_enum == null or is_boolean == false) {
-            //     try self.pushErr(match.expression.location, "match statement on non-enumeration or boolean type", .{});
-            //     return error.Invalid;
-            // }
-
-            // var resulting_type: ?ast.Type = null;
-            // if (got_as_enum) |enumeration| {
-            //     var fields_used = std.StringArrayHashMapUnmanaged(ast.Location){};
-            //     defer fields_used.deinit(self.allocator);
-
-            //     var else_location: ?ast.Location = null;
-
-            //     for (match.cases) |case| {
-            //         if (case.pattern) |pattern| {
-            //             try self.checkExpression(pattern);
-            //             try self.coerceTo(pattern, enumeration) catch {
-            //                 try self.pushErr(pattern.location, "pattern type mismatch", .{});
-            //                 return error.Invalid;
-            //             };
-            //         } else {
-            //             if (else_location) |location| {
-            //                 try self.pushErr(case.location, "multiple else cases", .{});
-            //                 try self.pushInfo(location, "previous else case here", .{});
-            //                 return error.Invalid;
-            //             }
-            //             else_location = case.location;
-            //         }
-
-            //         try self.symbols.enterScope(self.allocator);
-            //         defer self.symbols.exitScope();
-
-            //         try self.checkExpression(case.body);
-
-            //         if (case.body.typ) |typ| {
-            //             if (resulting_type == null) {
-            //                 resulting_type = typ;
-            //             } else if (resulting_type != typ) {
-            //                 try self.pushErr(case.body.location, "match statement case type mismatch", .{});
-            //                 try self.pushInfo(case.body.location, "expected '{s}'", .{prettyPrintType(resulting_type)});
-            //                 try self.pushInfo(case.body.location, "got '{s}'", .{prettyPrintType(typ)});
-            //                 return error.Invalid;
-            //             }
-            //         } else if (resulting_type != null) {
-            //             try self.pushErr(case.body.location, "match statement case type mismatch", .{});
-            //             try self.pushInfo(case.body.location, "expected '{s}'", .{prettyPrintType(resulting_type)});
-            //             try self.pushInfo(case.body.location, "got nothing", .{});
-            //             return error.Invalid;
-            //         }
-            //     }
-            // }
-        },
-        // inline else => {
-        //     try self.pushInfo(statement.location, "unimplemented statement type '{s}'", .{@tagName(statement.variant)});
-        // },
-    }
-}
-
-pub fn checkFunctionParameterDeclaration(self: *Self, field: *ast.Field) ErrorSet!void {
-    const field_name = field.key.variant.identifier;
-    const is_discard = std.mem.eql(u8, field_name, "_");
-    if (is_discard) {
-        return;
+                return try allocType(allocator, .{
+                    .function = .{
+                        .generics = generics.items,
+                        .parameters = parameters.items,
+                        .return_type = if (function.return_type) |return_type| try fromType(allocator, check, return_type, symbols) else null,
+                    },
+                });
+            },
+        }
     }
 
-    if (Primitives.lookup(field_name)) |_| {
-        try self.pushErr(field.location, "redeclaration of primitive '{s}'", .{field_name});
-        return;
+    fn allocType(allocator: std.mem.Allocator, typ: Type) !*const Type {
+        const created = try allocator.create(Type);
+        created.* = typ;
+        return created;
     }
 
-    if (self.symbols.lookup(field_name)) |symbol| {
-        try self.pushErr(field.location, "redeclaration of symbol '{s}'", .{field_name});
-        try self.pushInfo(symbol.location, "previous declaration here", .{});
-        return;
+    pub fn integer(self: ast.IntegerLiteral) Value {
+        return .{
+            .integer = self,
+        };
     }
-    try self.checkType(field.typ orelse return error.Invalid);
-    try self.symbols.add(self.allocator, field_name, .{
-        .typ = field.typ.?.*,
+
+    pub const i8_type = &Type{
+        .primitive = .i8,
+    };
+    pub const i16_type = &Type{
+        .primitive = .i16,
+    };
+    pub const i32_type = &Type{
+        .primitive = .i32,
+    };
+    pub const i64_type = &Type{
+        .primitive = .i64,
+    };
+    pub const u8_type = &Type{
+        .primitive = .u8,
+    };
+    pub const u16_type = &Type{
+        .primitive = .u16,
+    };
+    pub const u32_type = &Type{
+        .primitive = .u32,
+    };
+    pub const u64_type = &Type{
+        .primitive = .u64,
+    };
+    pub const f32_type = &Type{
+        .primitive = .f32,
+    };
+    pub const f64_type = &Type{
+        .primitive = .f64,
+    };
+    pub const bool_type = &Type{
+        .primitive = .bool,
+    };
+    pub const unit_type = &Type{
+        .primitive = .unit,
+    };
+    pub const type_type = &Type{
+        .primitive = .typ,
+    };
+    pub const string_type = &Type{ .slice = .{
         .mutable = false,
-        .expression = field.key,
-        .location = field.location,
-    });
-}
+        .element = &u8_type,
+    } };
 
-pub fn checkDeclaration(self: *Self, location: ast.Location, declaration: *ast.Declaration) ErrorSet!void {
-    if (Primitives.lookup(declaration.identifier)) |_| {
-        try self.pushErr(location, "redeclaration of primitive '{s}'", .{declaration.identifier});
-        return;
-    }
-
-    if (self.symbols.lookup(declaration.identifier)) |symbol| {
-        try self.pushErr(location, "redeclaration of symbol '{s}'", .{declaration.identifier});
-        try self.pushInfo(symbol.location, "previous declaration here", .{});
-        return;
-    }
-    try self.checkExpression(declaration.initialiser);
-    if (declaration.typ) |typ|
-        try self.checkType(typ);
-
-    // deduce from initialiser
-    if (declaration.typ == null) {
-        declaration.typ = if (declaration.initialiser.typ) |typ| &typ else null;
-    }
-
-    if (declaration.typ == null) {
-        try self.pushErr(location, "cannot deduce type", .{});
-        return error.Invalid;
-    }
-
-    try self.symbols.add(self.allocator, declaration.identifier, .{
-        .typ = (declaration.typ orelse &Primitives.i32_type).*,
-        .mutable = declaration.mutable,
-        .expression = declaration.initialiser,
-        .location = location,
-    });
-}
-
-pub fn checkType(self: *Self, typ: *const ast.Type) ErrorSet!void {
-    switch (typ.*) {
-        .primitive => {},
-        .pointer => |inner| {
-            try self.checkType(inner.element);
-        },
-        .array => |array| {
-            try self.checkType(array.element);
-        },
-        .function => |function| {
-            for (function.parameters) |parameter| {
-                try self.checkType(parameter.typ orelse return error.Invalid);
-            }
-            if (function.return_type) |return_type|
-                try self.checkType(return_type);
-        },
-        .structure => |structure| {
-            for (structure.fields) |field| {
-                try self.checkType(field.typ orelse return error.Invalid);
-            }
-        },
-        .enumeration => |enumeration| {
-            for (enumeration.fields) |variant| {
-                if (variant.initialiser) |value| {
-                    try self.checkExpression(value);
-                }
-            }
-        },
-        .optional => |inner| {
-            try self.checkType(inner);
-        },
-        .slice => |inner| {
-            try self.checkType(inner.element);
-        },
-        .expression => |expression| {
-            try self.checkExpression(expression);
-        },
-    }
-}
-
-pub fn resolveTypeFromAliasing(self: *Self, typ: ast.Type) ErrorSet!ast.Type {
-    const old_mutable_access = self.is_mutable_access;
-    self.is_mutable_access = false;
-    defer self.is_mutable_access = old_mutable_access;
-
-    var initial_typ = typ;
-    while (initial_typ == .expression) {
-        // search the scope
-        try self.checkExpression(typ.expression);
-        const expression_type = typ.expression.typ.?;
-        if (expression_type == .primitive and expression_type.primitive == .typ) {
-            switch (typ.expression.variant) {
-                .identifier => {
-                    if (Primitives.lookup(typ.expression.variant.identifier)) |primitive| {
-                        initial_typ = primitive.*;
-                        break;
-                    }
-                    if (self.symbols.lookup(typ.expression.variant.identifier)) |symbol| {
-                        initial_typ = symbol.expression.variant.typ.*;
-                        break;
-                    }
-                    try self.pushErr(typ.expression.location, "undeclared identifier '{s}'", .{typ.expression.variant.identifier});
-                    return error.Invalid;
-                },
-                .typ => |this_typ| {
-                    initial_typ = this_typ.*;
-                    break;
-                },
-                else => {
-                    try self.pushErr(typ.expression.location, "unimplemented expression type '{s}'", .{@tagName(typ.expression.variant)});
-                    return error.Invalid;
-                },
-            }
+    pub fn fromPrimitiveType(typ: ast.PrimitiveType) *const Type {
+        switch (typ) {
+            .i8 => return i8_type,
+            .i16 => return i16_type,
+            .i32 => return i32_type,
+            .i64 => return i64_type,
+            .u8 => return u8_type,
+            .u16 => return u16_type,
+            .u32 => return u32_type,
+            .u64 => return u64_type,
+            .f32 => return f32_type,
+            .f64 => return f64_type,
+            .bool => return bool_type,
+            .unit => return unit_type,
+            .typ => return type_type,
         }
     }
-    return initial_typ;
-}
-
-pub fn coerceTo(self: *Self, from: *ast.Expression, to_type: ast.Type) ErrorSet!void {
-    try self.resolveExpression(from);
-    const from_type_intermediate = try self.getTypeFromExpression(from);
-    const from_type = try self.resolveTypeFromAliasing(from_type_intermediate);
-    const to = try self.resolveTypeFromAliasing(to_type);
-    if (from_type == .primitive and to == .primitive) {
-        // non narrowing conversion
-        if (from_type.primitive == to.primitive) {
-            return;
-        }
-        if (from_type.primitive.isBool() and to.primitive.isBool()) {
-            return;
-        }
-        const is_integer = from_type.primitive.isInteger() and to.primitive.isInteger();
-        const is_float = from_type.primitive.isFloat() and to.primitive.isFloat();
-        const same_sign = from_type.primitive.isSigned() == to.primitive.isSigned();
-        if (same_sign and is_integer and from_type.primitive.getSize() <= to.primitive.getSize()) {
-            return;
-        }
-        if (is_float and from_type.primitive.getSize() <= to.primitive.getSize()) {
-            return;
-        }
-        try self.pushErr(from.location, "cannot coerce {s} to {s}", .{ prettyPrintType(from_type), prettyPrintType(to) });
-        return error.Invalid;
-    }
-    if (from.variant == .structure_literal) {
-        if (to == .structure) {
-            from.variant.structure_literal.explicit_type = .{
-                .typ = to_type,
-            };
-            try self.checkExpression(from);
-        }
-    }
-    if (from.variant == .enum_literal) {
-        if (to == .enumeration) {
-            for (to.enumeration.fields) |field| {
-                if (std.mem.eql(u8, field.key.variant.identifier, from.variant.enum_literal)) {
-                    return;
-                }
-            }
-            try self.pushErr(from.location, "enum literal not found in enumeration", .{});
-            return error.Invalid;
-        }
-    }
-    if (from_type == .primitive and from_type.primitive == .typ) {
-        if (from.variant.typ.* == .enumeration and to == .enumeration) {
-            // check lengths
-            if (from.variant.typ.enumeration.fields.len != to.enumeration.fields.len) {
-                try self.pushErr(from.location, "incompatible enumeration types", .{});
-                return error.Invalid;
-            }
-            for (from.variant.typ.enumeration.fields, to.enumeration.fields) |from_field, to_field| {
-                if (!std.mem.eql(u8, from_field.key.variant.identifier, to_field.key.variant.identifier)) {
-                    try self.pushErr(from.location, "incompatible enumeration types", .{});
-                    return error.Invalid;
-                }
-                if ((from_field.initialiser != null) != (from_field.initialiser != null)) {
-                    try self.pushErr(from.location, "incompatible enumeration types", .{});
-                    return error.Invalid;
-                }
-
-                if (from_field.initialiser != null and to_field.initialiser != null) {
-                    if (from_field.initialiser.? != to_field.initialiser.?) {
-                        try self.pushErr(from.location, "incompatible enumeration types", .{});
-                        return error.Invalid;
-                    }
-                }
-            }
-        }
-    }
-    if (from_type == .array and to_type == .array) {
-        const from_length = try self.resolveUnsignedIntegerLiteral(from_type.array.length orelse {
-            return error.Invalid;
-        });
-        const to_length = try self.resolveUnsignedIntegerLiteral(to.array.length orelse {
-            return error.Invalid;
-        });
-        if (from_length != to_length) {
-            try self.pushErr(from.location, "array length mismatch", .{});
-            try self.pushInfo(from_type.array.length.?.location, "expected {}", .{to_length});
-            try self.pushInfo(to.array.length.?.location, "got {}", .{from_length});
-            return error.Invalid;
-        }
-        if (!self.areTypesSame(from_type.array.element.*, to.array.element.*)) {
-            try self.pushErr(from.location, "array element type mismatch", .{});
-            return error.Invalid;
-        }
-        return;
-    }
-    std.debug.print("coerceTo: {s} to {s}\n", .{ prettyPrintType(from_type), prettyPrintType(to) });
-    return error.Invalid;
-}
-
-pub fn areTypesSame(self: *Self, a: ast.Type, b: ast.Type) bool {
-    if (a == .primitive and b == .primitive) {
-        return a.primitive == b.primitive;
-    }
-    if (a == .pointer and b == .pointer) {
-        return self.areTypesSame(a.pointer.element.*, b.pointer.element.*);
-    }
-    if (a == .array and b == .array) {
-        return self.areTypesSame(a.array.element.*, b.array.element.*);
-    }
-    if (a == .function and b == .function) {
-        if (a.function.parameters.len != b.function.parameters.len) {
-            return false;
-        }
-        for (a.function.parameters, b.function.parameters) |a_param, b_param| {
-            if (!self.areTypesSame(a_param.typ.?.*, b_param.typ.?.*)) {
-                return false;
-            }
-        }
-        return self.areTypesSame(a.function.return_type.?.*, b.function.return_type.?.*);
-    }
-    if (a == .structure and b == .structure) {
-        if (a.structure.fields.len != b.structure.fields.len) {
-            return false;
-        }
-        for (a.structure.fields, b.structure.fields) |a_field, b_field| {
-            if (!self.areTypesSame(a_field.typ.?.*, b_field.typ.?.*)) {
-                return false;
-            }
-        }
-        return true;
-    }
-    if (a == .enumeration and b == .enumeration) {
-        if (a.enumeration.fields.len != b.enumeration.fields.len) {
-            return false;
-        }
-        for (a.enumeration.fields, b.enumeration.fields) |a_field, b_field| {
-            if (!std.mem.eql(u8, a_field.key.variant.identifier, b_field.key.variant.identifier)) {
-                return false;
-            }
-            if (a_field.initialiser != b_field.initialiser) {
-                return false;
-            }
-        }
-        return true;
-    }
-    if (a == .optional and b == .optional) {
-        return self.areTypesSame(a.optional.*, b.optional.*);
-    }
-    if (a == .slice and b == .slice) {
-        return self.areTypesSame(a.slice.element.*, b.slice.element.*);
-    }
-    return false;
-}
+};
 
 pub const SymbolTable = struct {
     scopes: std.ArrayListUnmanaged(*Scope) = .{},
@@ -1096,23 +1322,23 @@ pub const SymbolTable = struct {
     }
 
     pub const AddInfo = struct {
-        typ: ast.Type,
         mutable: bool,
-        expression: *ast.Expression,
+        expression: ?*ast.Expression = null,
         location: ast.Location,
+        typ: *const ast.Type,
     };
     pub fn add(self: *SymbolTable, allocator: std.mem.Allocator, name: []const u8, info: AddInfo) ErrorSet!void {
         const scope = self.current_scope orelse return error.Invalid;
         try scope.put(allocator, name, .{
             .name = name,
-            .typ = info.typ,
             .mutable = info.mutable,
             .expression = info.expression,
             .location = info.location,
+            .typ = info.typ,
         });
     }
 
-    pub fn lookup(self: *SymbolTable, name: []const u8) ?Symbol {
+    pub fn lookup(self: *const SymbolTable, name: []const u8) ?Symbol {
         var current_scope = self.current_scope;
         while (current_scope) |scope| {
             if (scope.lookup(name)) |symbol| {
@@ -1217,8 +1443,8 @@ const Scope = struct {
 
 pub const Symbol = struct {
     name: []const u8,
-    typ: ast.Type,
     mutable: bool,
     location: ast.Location,
-    expression: *ast.Expression,
+    typ: *const ast.Type,
+    expression: ?*ast.Expression = null,
 };

@@ -635,7 +635,7 @@ pub fn parseDeclaration(self: *Parser, attributes: []const *ast.Expression) Erro
         break :blk true;
     } else false;
 
-    var decl: ast.Declaration = .{
+    var decl: ast.DeclarationStatement = .{
         .identifier = undefined,
         .exported = is_exported,
         .public = is_public,
@@ -880,11 +880,11 @@ pub fn parsePrimaryExpression(self: *Parser, turn_to_block: bool) ErrorSet!*ast.
                 );
                 return error.InvalidIntegerLiteral;
             };
-            const signed = integer < 0;
-            const abs: u64 = @intCast(if (signed) -integer else integer);
+            const negative = integer < 0;
+            const abs: u64 = @intCast(if (negative) -integer else integer);
             const got = try self.container.allocExpression(.{ .location = start, .variant = .{
                 .integer_literal = .{
-                    .signed = signed,
+                    .negative = negative,
                     .value = abs,
                 },
             } });
@@ -1002,11 +1002,10 @@ pub fn parseIdentifierExpression(self: *Parser) ErrorSet!*ast.Expression {
 
     if (self.currentTokenIsKind(.open_brace) and self.structure_literals_allowed) {
         const literal = try self.parseStructureLiteral();
-        literal.variant.structure_literal.explicit_type = .{
-            .expression = expr,
-        };
+        literal.variant.structure_literal.explicit_type = expr;
         literal.location = start;
-        literal.typ = ast.Type{ .expression = expr };
+        literal.typ =
+            try self.container.allocType(.{ .expression = expr });
         return literal;
     }
 
