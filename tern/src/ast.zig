@@ -118,6 +118,8 @@ pub const PrimitiveType = enum(u8) {
 
     typ = 11, // type
     unit = 12, // void
+    nil = 13, // nil
+    never = 14, // unreachable
 
     pub const Kind = enum {
         signed_integer,
@@ -142,6 +144,8 @@ pub const PrimitiveType = enum(u8) {
             .bool => return "bool",
             .typ => return "type",
             .unit => return "unit",
+            .nil => return "nil",
+            .never => return "never",
         }
     }
 
@@ -166,6 +170,36 @@ pub const PrimitiveType = enum(u8) {
             .bool => return 1,
             .typ => return 0,
             .unit => return 0,
+            .nil => return 0,
+            .never => return 0,
+        }
+    }
+
+    pub fn getMaxValue(self: PrimitiveType) i128 {
+        switch (self) {
+            .i8 => return std.math.maxInt(i8),
+            .i16 => return std.math.maxInt(i16),
+            .i32 => return std.math.maxInt(i32),
+            .i64 => return std.math.maxInt(i64),
+            .u8 => return std.math.maxInt(u8),
+            .u16 => return std.math.maxInt(u16),
+            .u32 => return std.math.maxInt(u32),
+            .u64 => return std.math.maxInt(u64),
+            else => return 0,
+        }
+    }
+
+    pub fn getMinValue(self: PrimitiveType) i128 {
+        switch (self) {
+            .i8 => return std.math.minInt(i8),
+            .i16 => return std.math.minInt(i16),
+            .i32 => return std.math.minInt(i32),
+            .i64 => return std.math.minInt(i64),
+            .u8 => return 0,
+            .u16 => return 0,
+            .u32 => return 0,
+            .u64 => return 0,
+            else => return 0,
         }
     }
 
@@ -234,7 +268,7 @@ pub const PrimitiveType = enum(u8) {
 
     pub fn isSpecial(self: PrimitiveType) bool {
         switch (self) {
-            .typ, .unit => return true,
+            .typ, .unit, .nil, .never => return true,
             else => return false,
         }
     }
@@ -273,6 +307,27 @@ pub const Type = union(TypeKind) {
         mutable: bool,
     },
     function: FunctionType,
+    enum_literal,
+    structure_literal,
+
+    pub fn isPrimitive(self: Type, kind: PrimitiveType) bool {
+        return self == .primitive and self.primitive == kind;
+    }
+
+    pub fn isUnit(self: Type) bool {
+        switch (self) {
+            .primitive => return self.primitive == PrimitiveType.unit,
+            else => return false,
+        }
+    }
+
+    pub fn isTruthy(self: Type) bool {
+        switch (self) {
+            .primitive => return self.primitive == PrimitiveType.bool,
+            .optional => return true,
+            else => return false,
+        }
+    }
 };
 pub const TypeKind = enum {
     structure,
@@ -284,6 +339,8 @@ pub const TypeKind = enum {
     array,
     slice,
     function,
+    enum_literal,
+    structure_literal,
 };
 
 pub const FunctionType = struct {
@@ -301,12 +358,13 @@ pub const MatchCase = struct {
 
 pub const Expression = struct {
     location: Location,
-    typ: ?Type = null,
+    typ: ?*const Type = null,
     variant: union(ExpressionKind) {
         boolean_literal: bool,
         integer_literal: struct {
             value: u64,
             signed: bool,
+            specifier: PrimitiveType,
         },
         float_literal: f64,
         string_literal: []const u8,
@@ -314,10 +372,7 @@ pub const Expression = struct {
         char_literal: u32,
         structure_literal: struct {
             // TODO: cleanup
-            explicit_type: ?union(enum) {
-                expression: *Expression,
-                typ: Type,
-            } = null,
+            explicit_type: ?*Expression = null,
             fields: []Field,
         },
         typ: *const Type,
@@ -327,39 +382,39 @@ pub const Expression = struct {
             left: *Expression,
             right: *Expression,
             // analyse in the type checker
-            result_type: ?Type = null,
+            result_type: ?*const Type = null,
         },
         unary: struct {
             op: Lexer.Token.Kind,
             operand: *Expression,
             // analyse in the type checker
-            result_type: ?Type = null,
+            result_type: ?*const Type = null,
         },
         call: struct {
             callee: *Expression,
             arguments: []*Expression,
             // analyse in the type checker
-            result_type: ?Type = null,
+            result_type: ?*const Type = null,
         },
         subscript: struct {
             array: *Expression,
             index: *Expression,
             end_location: Location,
             // analyse in the type checker
-            result_type: ?Type = null,
+            result_type: ?*const Type = null,
         },
         deref: struct {
             operand: *Expression,
             end_location: Location,
             // analyse in the type checker
-            result_type: ?Type = null,
+            result_type: ?*const Type = null,
         },
         field: struct {
             record: *Expression,
             end_location: Location,
             field: []const u8,
             // analyse in the type checker
-            result_type: ?Type = null,
+            result_type: ?*const Type = null,
         },
         function: struct {
             typ: *const Type,
@@ -376,12 +431,17 @@ pub const Expression = struct {
             label: ?[]const u8 = null,
             statements: []const *Statement,
             // analyse in the type checker
-            result_type: ?Type = null,
+            result_type: ?*const Type = null,
         },
         pipeline: struct {
             stages: []const *Expression,
             // analyse in the type checker
-            result_type: ?Type = null,
+            result_type: ?*const Type = null,
+        },
+        expressive_statement: struct {
+            statement: *Statement,
+            // analyse in the type checker
+            result_type: ?*const Type = null,
         },
         undefined: void,
         nil: void,
@@ -407,6 +467,7 @@ pub const ExpressionKind = enum {
     lambda,
     block,
     pipeline,
+    expressive_statement,
     undefined,
     nil,
 };
@@ -418,6 +479,7 @@ pub const Declaration = struct {
     identifier: []const u8,
     typ: ?*const Type = null,
     initialiser: *Expression,
+    is_type: bool = false,
 };
 
 pub const Statement = struct {
@@ -430,7 +492,7 @@ pub const Statement = struct {
             capture: ?[]Field = null,
             then_branch: *Expression,
             else_branch: ?*Expression = null,
-            result_type: ?Type = null,
+            result_type: ?*const Type = null,
         },
         @"while": struct {
             condition: *Expression,
@@ -444,6 +506,7 @@ pub const Statement = struct {
         @"return": ?*Expression,
         @"break": struct {
             label: ?[]const u8,
+            expression: ?*Expression = null,
             resolved_block: ?*Expression = null,
         },
         @"continue": struct {
@@ -453,7 +516,7 @@ pub const Statement = struct {
         match: struct {
             expression: *Expression,
             cases: []const MatchCase,
-            result_type: ?Type = null,
+            result_type: ?*const Type = null,
         },
         declaration: Declaration,
         assignment: struct {
@@ -474,4 +537,102 @@ pub const StatementKind = enum {
     match,
     declaration,
     assignment,
+};
+
+pub const Primitives = struct {
+    pub const i8_type = &Type{
+        .primitive = .i8,
+    };
+    pub const i16_type = &Type{
+        .primitive = .i16,
+    };
+    pub const i32_type = &Type{
+        .primitive = .i32,
+    };
+    pub const i64_type = &Type{
+        .primitive = .i64,
+    };
+    pub const u8_type = &Type{
+        .primitive = .u8,
+    };
+    pub const u16_type = &Type{
+        .primitive = .u16,
+    };
+    pub const u32_type = &Type{
+        .primitive = .u32,
+    };
+    pub const u64_type = &Type{
+        .primitive = .u64,
+    };
+    pub const f32_type = &Type{
+        .primitive = .f32,
+    };
+    pub const f64_type = &Type{
+        .primitive = .f64,
+    };
+    pub const bool_type = &Type{
+        .primitive = .bool,
+    };
+    pub const unit_type = &Type{
+        .primitive = .unit,
+    };
+    pub const type_type = &Type{
+        .primitive = .typ,
+    };
+    pub const nil_type = &Type{
+        .primitive = .nil,
+    };
+    pub const string_type = &Type{ .slice = .{
+        .mutable = false,
+        .element = u8_type,
+    } };
+    pub const structure_literal = &Type{ .structure_literal = {} };
+    pub const enum_literal = &Type{ .enum_literal = {} };
+    pub const never = &Type{ .primitive = .never };
+
+    pub fn lookup(name: []const u8) ?*const Type {
+        inline for (.{
+            .{ "i8", i8_type },
+            .{ "i16", i16_type },
+            .{ "i32", i32_type },
+            .{ "i64", i64_type },
+            .{ "u8", u8_type },
+            .{ "u16", u16_type },
+            .{ "u32", u32_type },
+            .{ "u64", u64_type },
+            .{ "f32", f32_type },
+            .{ "f64", f64_type },
+            .{ "bool", bool_type },
+            .{ "unit", unit_type },
+            .{ "type", type_type },
+            .{ "string", string_type },
+            .{ "nil", nil_type },
+            .{ "unreachable", never },
+        }) |set| {
+            if (std.mem.eql(u8, name, set.@"0")) {
+                return set.@"1";
+            }
+        }
+        return null;
+    }
+
+    pub fn fromPrimitive(primitive: PrimitiveType) *const Type {
+        switch (primitive) {
+            .i8 => return i8_type,
+            .i16 => return i16_type,
+            .i32 => return i32_type,
+            .i64 => return i64_type,
+            .u8 => return u8_type,
+            .u16 => return u16_type,
+            .u32 => return u32_type,
+            .u64 => return u64_type,
+            .f32 => return f32_type,
+            .f64 => return f64_type,
+            .bool => return bool_type,
+            .unit => return unit_type,
+            .typ => return type_type,
+            .nil => return nil_type,
+            .never => return never,
+        }
+    }
 };

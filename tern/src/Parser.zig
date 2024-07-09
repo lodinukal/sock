@@ -149,12 +149,13 @@ pub fn parseTopLevel(self: *Parser) ErrorSet!*ast.Statement {
     return statement;
 }
 
-pub fn parseType(self: *Parser) ErrorSet!*ast.Type {
+pub fn parseType(self: *Parser) ErrorSet!*const ast.Type {
     const old_structure_literals_allowed = self.structure_literals_allowed;
     self.structure_literals_allowed = false;
     defer self.structure_literals_allowed = old_structure_literals_allowed;
     switch (self.current_token.kind) {
         .structure => return try self.parseStructType(),
+        .enumeration => return try self.parseEnumType(),
         .question => {
             try self.consumeKind(.question);
             const inner = try self.parseType();
@@ -212,6 +213,10 @@ pub fn parseType(self: *Parser) ErrorSet!*ast.Type {
             try self.consumeKind(.@"fn");
             return try self.parseFunctionType();
         },
+        .bang => {
+            try self.consumeKind(.bang);
+            return ast.Primitives.never;
+        },
         else => {
             try self.pushErrorHere("unexpected token '{}'", .{self.current_token.kind});
             return error.UnexpectedToken;
@@ -219,7 +224,7 @@ pub fn parseType(self: *Parser) ErrorSet!*ast.Type {
     }
 }
 
-pub fn parseFunctionType(self: *Parser) ErrorSet!*ast.Type {
+pub fn parseFunctionType(self: *Parser) ErrorSet!*const ast.Type {
     try self.consumeKind(.open_paren);
 
     var generics = std.ArrayListUnmanaged(ast.Field){};
@@ -233,7 +238,7 @@ pub fn parseFunctionType(self: *Parser) ErrorSet!*ast.Type {
             .type_requirement = .required,
             .value_requirement = .allow,
             .allow_attributes = true,
-            .key_type = .expression,
+            .key_type = .identifier,
         });
         if (is_generic)
             try generics.append(self.container.node_allocator, field)
@@ -247,7 +252,7 @@ pub fn parseFunctionType(self: *Parser) ErrorSet!*ast.Type {
 
     try self.consumeKind(.close_paren);
     // TODO: parse modifiers
-    const return_type: ?*ast.Type = if (self.currentTokenIsKind(.arrow)) blk: {
+    const return_type: ?*const ast.Type = if (self.currentTokenIsKind(.arrow)) blk: {
         try self.consumeKind(.arrow);
         break :blk try self.parseType();
     } else null;
@@ -282,7 +287,7 @@ pub fn parseField(self: *Parser, info: FieldParseInfo) ErrorSet!ast.Field {
     const start_field = self.current_token.location;
     const key = if (info.key_type == .expression) try self.parseExpression() else try self.parseIdentifierExpression();
     // :
-    const got_type: ?*ast.Type =
+    const got_type: ?*const ast.Type =
         if (self.currentTokenIsKind(.colon))
     blk: {
         if (info.type_requirement == .disallow) {
@@ -340,7 +345,7 @@ pub fn parseFieldList(self: *Parser, info: FieldParseInfo, closer: Lexer.Token.K
     return fields.items;
 }
 
-pub fn parseStructType(self: *Parser) ErrorSet!*ast.Type {
+pub fn parseStructType(self: *Parser) ErrorSet!*const ast.Type {
     const start = self.current_token.location;
     // struct
     try self.consumeKind(.structure);
@@ -358,6 +363,37 @@ pub fn parseStructType(self: *Parser) ErrorSet!*ast.Type {
         .location = start,
         .fields = fields,
     } });
+}
+
+pub fn parseEnumType(self: *Parser) ErrorSet!*const ast.Type {
+    const start = self.current_token.location;
+    // enum
+    try self.consumeKind(.enumeration);
+    // {
+    try self.consumeKind(.open_brace);
+    // FIELDS
+    const fields = try self.parseFieldList(.{
+        .type_requirement = .disallow,
+        .value_requirement = .allow,
+        .allow_attributes = true,
+        .key_type = .identifier,
+    }, .close_brace);
+    // }
+    try self.consumeKind(.close_brace);
+    return try self.container.allocType(.{ .enumeration = .{
+        .location = start,
+        .fields = fields,
+    } });
+}
+
+pub fn isExpressiveStatement(self: *Parser) bool {
+    switch (self.current_token.kind) {
+        .@"if",
+        .match,
+        .@"return",
+        => return true,
+        else => return false,
+    }
 }
 
 pub fn parseStatement(self: *Parser) ErrorSet!*ast.Statement {
@@ -425,7 +461,10 @@ pub fn parseIfStatement(self: *Parser, attributes: []const *ast.Expression) Erro
     // |CAPTURE|
     const capture: ?[]ast.Field = if (self.nextTokenIsKind(.pipe)) try self.parseCapture() else null;
     // {BLOCK} / STATEMENT
-    const then_branch = try self.parseBlockExpression(.{});
+    const then_label = try self.tryParseLabel(true);
+    const then_branch = try self.parseBlockExpression(.{
+        .label = then_label,
+    });
     // ELSE
     const else_branch: ?*ast.Expression =
         if (self.currentTokenIsKind(.@"else"))
@@ -433,7 +472,10 @@ pub fn parseIfStatement(self: *Parser, attributes: []const *ast.Expression) Erro
         // else
         try self.consumeKind(.@"else");
         // ELSE
-        break :blk try self.parseBlockExpression(.{});
+        const else_label = try self.tryParseLabel(true);
+        break :blk try self.parseBlockExpression(.{
+            .label = else_label,
+        });
     } else null;
     return try self.container.allocStatement(.{
         .location = start,
@@ -459,8 +501,11 @@ pub fn parseWhileStatement(self: *Parser, attributes: []const *ast.Expression) E
     const condition = try self.parseExpression();
     // )
     try self.consumeKind(.close_paren);
+    const label = try self.tryParseLabel(true);
     // {BLOCK}
-    const body = try self.parseBlockExpression(.{});
+    const body = try self.parseBlockExpression(.{
+        .label = label,
+    });
     return try self.container.allocStatement(.{
         .location = start,
         .attributes = attributes,
@@ -483,8 +528,11 @@ pub fn parseForStatement(self: *Parser, attributes: []const *ast.Expression) Err
     try self.consumeKind(.close_paren);
     // |CAPTURE|
     const capture: ?[]ast.Field = if (self.nextTokenIsKind(.pipe)) try self.parseCapture() else null;
+    const label = try self.tryParseLabel(true);
     // {BLOCK}
-    const body = try self.parseBlockExpression(.{});
+    const body = try self.parseBlockExpression(.{
+        .label = label,
+    });
     return try self.container.allocStatement(.{
         .location = start,
         .attributes = attributes,
@@ -551,11 +599,15 @@ pub fn parseBreakStatement(self: *Parser, attributes: []const *ast.Expression) E
     // break
     try self.consumeKind(.@"break");
     // :label
-    const label = try self.tryParseLabel(false);
+    var label = try self.tryParseLabel(false);
+    const expression: ?*ast.Expression = if (label == null) try self.parseExpression() else null;
+    if (label == null) {
+        label = try self.tryParseLabel(false);
+    }
     return try self.container.allocStatement(.{
         .location = start,
         .attributes = attributes,
-        .variant = .{ .@"break" = .{ .label = label } },
+        .variant = .{ .@"break" = .{ .label = label, .expression = expression } },
     });
 }
 
@@ -595,8 +647,11 @@ pub fn parseMatchStatement(self: *Parser, attributes: []const *ast.Expression) E
         } else try self.parseExpression();
         // =>
         try self.consumeKind(.double_arrow);
+        const label = try self.tryParseLabel(true);
         // BODY
-        const body = try self.parseBlockExpression(.{});
+        const body = try self.parseBlockExpression(.{
+            .label = label,
+        });
         try cases.append(self.container.node_allocator, .{
             .location = location,
             .pattern = pattern,
@@ -673,8 +728,22 @@ pub fn parseDeclaration(self: *Parser, attributes: []const *ast.Expression) Erro
         try self.consumeKind(.equal);
     }
 
+    const label = try self.tryParseLabel(true);
+
     // EXPRESSION
     decl.initialiser = if (is_function_declaraction) try self.parseFunctionExpression(true) else try self.parseExpression();
+
+    if (label) |got_label| {
+        if (decl.initialiser.variant != .block) {
+            try self.pushErrorHere("expected block expression, got {}", .{decl.initialiser.variant});
+            return error.Unexpected;
+        }
+        decl.initialiser.variant.block.label = got_label;
+    }
+
+    if (decl.initialiser.variant == .typ) {
+        decl.is_type = true;
+    }
     return try self.container.allocStatement(.{
         .location = start,
         .attributes = attributes,
@@ -756,14 +825,13 @@ pub fn parseCaptureLambdaExpression(self: *Parser) ErrorSet!*ast.Expression {
 }
 
 pub const ParseBlockInfo = struct {
+    label: ?[]const u8 = null,
     statement_requirement: enum { one, any, multiple } = .any,
 };
 pub fn parseBlockExpression(self: *Parser, info: ParseBlockInfo) ErrorSet!*ast.Expression {
     const start = self.current_token.location;
     var statements = std.ArrayListUnmanaged(*ast.Statement){};
     const statement_requirement = info.statement_requirement;
-
-    const label = try self.tryParseLabel(true);
 
     // {
     var multiple_statements = false;
@@ -794,11 +862,23 @@ pub fn parseBlockExpression(self: *Parser, info: ParseBlockInfo) ErrorSet!*ast.E
             break;
         }
     }
+
+    // if the last statement is just an expression, convert it to a break
+    if (statements.getLastOrNull()) |last| {
+        if (last.variant == .expression) {
+            const expression = last.variant.expression;
+            last.variant = .{ .@"break" = .{
+                .label = null,
+                .expression = expression,
+            } };
+        }
+    }
+
     return try self.container.allocExpression(.{
         .location = start,
         .variant = .{
             .block = .{
-                .label = label,
+                .label = info.label,
                 .statements = statements.items,
             },
         },
@@ -851,9 +931,24 @@ pub fn parseUnaryExpression(self: *Parser, turn_to_block: bool) ErrorSet!*ast.Ex
 
 pub fn parsePrimaryExpression(self: *Parser, turn_to_block: bool) ErrorSet!*ast.Expression {
     const start = self.current_token.location;
+    const label = try self.tryParseLabel(true);
     if (turn_to_block) {
-        return try self.parseBlockExpression(.{});
+        return try self.parseBlockExpression(.{
+            .label = label,
+        });
     }
+    if (label) |got_label| {
+        return try self.parseBlockExpression(.{
+            .label = got_label,
+        });
+    }
+
+    if (self.isExpressiveStatement()) {
+        return try self.container.allocExpression(.{ .location = start, .variant = .{
+            .expressive_statement = .{ .statement = try self.parseStatement() },
+        } });
+    }
+
     switch (self.current_token.kind) {
         .open_paren => {
             try self.consumeKind(.open_paren);
@@ -873,19 +968,59 @@ pub fn parsePrimaryExpression(self: *Parser, turn_to_block: bool) ErrorSet!*ast.
             return try self.container.allocExpression(.{ .location = start, .variant = .nil });
         },
         .integer => {
-            const integer = std.fmt.parseInt(i128, self.current_token.data, 0) catch {
+            // check for primitive specifier at the end of the integer
+            // i.e. 10u8
+
+            const specifier_index = std.mem.lastIndexOfAny(u8, self.current_token.data, "iu") orelse self.current_token.data.len;
+            const integer_data = self.current_token.data[0..specifier_index];
+            const specifier_data = self.current_token.data[specifier_index..];
+
+            const integer = std.fmt.parseInt(i128, integer_data, 0) catch {
                 try self.pushErrorHere(
                     "invalid integer literal '{s}'",
                     .{self.current_token.data},
                 );
                 return error.InvalidIntegerLiteral;
             };
+
+            const specifier: ast.PrimitiveType = blk: {
+                if (std.meta.stringToEnum(ast.PrimitiveType, specifier_data)) |spec| {
+                    if (spec.isInteger())
+                        break :blk spec;
+                    try self.pushErrorHere(
+                        "invalid integer specifier '{s}'",
+                        .{specifier_data},
+                    );
+                }
+                break :blk if (integer < 0) .i32 else .u32;
+            };
+
+            switch (specifier) {
+                inline else => |spec| {
+                    if (integer < spec.getMinValue()) {
+                        try self.pushErrorHere(
+                            "integer literal '{s}' is too small for type {s}",
+                            .{ self.current_token.data, spec.name() },
+                        );
+                        return error.InvalidIntegerLiteral;
+                    }
+                    if (integer > spec.getMaxValue()) {
+                        try self.pushErrorHere(
+                            "integer literal '{s}' is too large for type {s}",
+                            .{ self.current_token.data, spec.name() },
+                        );
+                        return error.InvalidIntegerLiteral;
+                    }
+                },
+            }
+
             const signed = integer < 0;
             const abs: u64 = @intCast(if (signed) -integer else integer);
             const got = try self.container.allocExpression(.{ .location = start, .variant = .{
                 .integer_literal = .{
                     .signed = signed,
                     .value = abs,
+                    .specifier = specifier,
                 },
             } });
             try self.consumeKind(.integer);
@@ -1002,11 +1137,9 @@ pub fn parseIdentifierExpression(self: *Parser) ErrorSet!*ast.Expression {
 
     if (self.currentTokenIsKind(.open_brace) and self.structure_literals_allowed) {
         const literal = try self.parseStructureLiteral();
-        literal.variant.structure_literal.explicit_type = .{
-            .expression = expr,
-        };
+        literal.variant.structure_literal.explicit_type = expr;
         literal.location = start;
-        literal.typ = ast.Type{ .expression = expr };
+        literal.typ = try self.container.allocType(.{ .expression = expr });
         return literal;
     }
 

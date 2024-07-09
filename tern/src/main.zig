@@ -49,13 +49,17 @@ pub fn main() !void {
     var symbols = try Check.SymbolTable.init(allocator);
     defer symbols.deinit(allocator);
 
+    var counting = @import("CountingAllocator.zig").init(allocator);
+    const using_allocator = counting.allocator();
+
     var check = Check{
-        .allocator = allocator,
+        .allocator = using_allocator,
         .reporter = &reporter,
         .symbols = &symbols,
     };
     defer {
         std.debug.print("{}", .{reporter});
+        std.debug.print("{}", .{counting});
         check.deinit();
     }
 
@@ -78,7 +82,7 @@ pub fn main() !void {
     std.debug.print("Check time: {d}ns\n", .{end_check - start_check});
 }
 
-const test_source = @embedFile("test.tn");
+const test_source = @embedFile("shader.tn");
 
 fn recurseExpressionTree(exp: *ast.Expression, depth: usize) void {
     for (0..depth) |_| {
