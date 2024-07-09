@@ -5,6 +5,7 @@ const Reporter = @import("Reporter.zig");
 pub const Error = error{
     OutOfMemory,
     Invalid,
+    Missing,
 };
 
 pub const Context = struct {
@@ -16,6 +17,12 @@ pub const Context = struct {
     },
     environments: std.ArrayListUnmanaged(*Environment) = .{},
     values: std.ArrayListUnmanaged(Value) = .{},
+    check_stack: std.ArrayListUnmanaged(CheckItem) = .{},
+
+    pub const CheckItem = union(enum) {
+        statement: *ast.Statement,
+        expression: *ast.Expression,
+    };
 
     pub fn init(self: *Context) void {
         self.global_environment.context = self;
@@ -27,6 +34,7 @@ pub const Context = struct {
             got.deinit(self.allocator);
         }
         self.environments.deinit(self.allocator);
+        self.check_stack.deinit(self.allocator);
         self.global_environment.deinit(self.allocator);
     }
 
@@ -67,14 +75,180 @@ pub const Context = struct {
     pub fn checkStatement(self: *Context, statement: *ast.Statement, environment: *Environment) Error!void {
         switch (statement.variant) {
             .declaration => |declaration| {
-                _ = try environment.define(self.allocator, declaration.identifier, .{
+                _ = environment.define(self.allocator, declaration.identifier, .{
                     .data = .runtime_value,
                     .typ = @enumFromInt(14),
                     .location = declaration.initialiser.location,
                     .mutable = declaration.mutable,
-                });
+                }) catch |err| switch (err) {
+                    Error.Missing => {
+                        try self.check_stack.append(self.allocator, .{ .statement = statement });
+                        return;
+                    },
+                    else => return err,
+                };
             },
             else => {},
+        }
+    }
+
+    pub fn checkDeclaration(
+        self: *Context,
+        statement: *ast.Statement,
+        environment: *Environment,
+        declaration: ast.Declaration,
+    ) Error!void {
+        // functions have their types predeclared
+        const is_function = declaration.initialiser.variant == .function;
+        if (is_function) {
+            const function_type = try self.push(.{
+                .data = .{ .function_type = .{} },
+            });
+
+            _ = try environment.define(self.allocator, declaration.identifier, .{
+                .data = .{ .function = .{
+                    .typ = function_type,
+                } },
+                .typ = @enumFromInt(14),
+            });
+        } else {}
+    }
+
+    pub fn convertAstType(self: *Context, typ: *const ast.Type, environment: *Environment) Error!ValueIndex {
+        switch (typ.*) {
+            .structure => |structure| {
+                var fields = std.StringArrayHashMapUnmanaged(ValueIndex){};
+                errdefer fields.deinit(self.allocator);
+
+                for (structure.fields) |field| {
+                    try fields.put(self.allocator, field.key.variant.identifier, try self.push(.{
+                        .data = if (field.initialiser) |initialiser| .{.unit} else .unit,
+                        .typ = try self.convertAstType(field.initialiser.?.typ, environment),
+                    }));
+                }
+
+                // var structure_type = Value{
+                //     .data = .{ .structure = .{
+                //         .fields = .{},
+                //     } },
+                //     .typ = .typ,
+                // };
+            },
+            .enumeration => {},
+            .expression => {},
+            .primitive => {},
+            .optional => {},
+            .pointer => {},
+            .array => {},
+            .slice => {},
+            .function => {},
+        }
+    }
+
+    pub fn convertExpression(self: *Context, expr: *const ast.Expression, environment: *Environment) Error!ValueIndex {
+        switch (expr.variant) {
+            .boolean_literal => |value| {
+                return try self.push(.{
+                    .data = .{
+                        .boolean = value,
+                    },
+                    .typ = .boolean_type,
+                });
+            },
+            .integer_literal => |value| {
+                const data: Value.Data = switch (value.signed) {
+                    true => blk: {
+                        var temp: Value.Data = switch (value.value) {
+                            std.math.minInt(i8)...std.math.maxInt(i8) => .{
+                                .i8 = @intCast(value.value),
+                            },
+                            std.math.minInt(i16)...std.math.maxInt(i16) => .{
+                                .i16 = @intCast(value.value),
+                            },
+                            std.math.minInt(i32)...std.math.maxInt(i32) => .{
+                                .i32 = @intCast(value.value),
+                            },
+                            std.math.minInt(i64)...std.math.maxInt(i64) => .{
+                                .i64 = @intCast(value.value),
+                            },
+                            else => .{
+                                .untyped_integer = @intCast(value.value),
+                            },
+                        };
+                        if (value.signed) {
+                            switch (temp) {
+                                inline .i8, .i16, .i32, .i64 => |*got| got.* = -got.*,
+                                else => unreachable,
+                            }
+                        }
+                        break :blk temp;
+                    },
+                    false => switch (value.value) {
+                        0...std.math.maxInt(u8) => .{
+                            .u8 = @intCast(value.value),
+                        },
+                        0...std.math.maxInt(u16) => .{
+                            .u16 = @intCast(value.value),
+                        },
+                        0...std.math.maxInt(u32) => .{
+                            .u32 = @intCast(value.value),
+                        },
+                        0...std.math.maxInt(u64) => .{
+                            .u64 = @intCast(value.value),
+                        },
+                        else => .{
+                            .untyped_integer = @intCast(value.value),
+                        },
+                    },
+                };
+                return try self.push(.{
+                    .data = data,
+                    .typ = switch (data) {
+                        .i8 => .i8_type,
+                        .i16 => .i16_type,
+                        .i32 => .i32_type,
+                        .i64 => .i64_type,
+                        .u8 => .u8_type,
+                        .u16 => .u16_type,
+                        .u32 => .u32_type,
+                        .u64 => .u64_type,
+                        else => .i64_type,
+                    },
+                });
+            },
+            .float_literal => |value| {
+                return try self.push(.{
+                    .data = .{
+                        .f32 = @floatCast(value),
+                    },
+                    .typ = .f32_type,
+                });
+            },
+            .string_literal => |value| {
+                return try self.push(.{
+                    .data = .{
+                        .string = value,
+                    },
+                    .typ = .string_type,
+                });
+            },
+            .enum_literal => {},
+            .char_literal => {},
+            .structure_literal => {},
+            .typ => {},
+            .identifier => {},
+            .binary => {},
+            .unary => {},
+            .call => {},
+            .subscript => {},
+            .deref => {},
+            .field => {},
+            .function => {},
+            .lambda => {},
+            .block => {},
+            .pipeline => {},
+            .undefined => {},
+            .nil => {},
         }
     }
 };
