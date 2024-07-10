@@ -286,10 +286,12 @@ pub const Type = union(TypeKind) {
     structure: struct {
         location: Location,
         fields: []Field,
+        decls: []Declaration,
     },
     enumeration: struct {
         location: Location,
         fields: []Field,
+        decls: []Declaration,
     },
     expression: *Expression,
     primitive: PrimitiveType,
@@ -314,16 +316,24 @@ pub const Type = union(TypeKind) {
         return self == .primitive and self.primitive == kind;
     }
 
+    pub fn isType(self: Type) bool {
+        return self == .primitive and self.primitive == .typ;
+    }
+
+    pub fn isNever(self: Type) bool {
+        return self == .primitive and self.primitive == .never;
+    }
+
     pub fn isUnit(self: Type) bool {
         switch (self) {
-            .primitive => return self.primitive == PrimitiveType.unit,
+            .primitive => return self.primitive == .unit,
             else => return false,
         }
     }
 
     pub fn isTruthy(self: Type) bool {
         switch (self) {
-            .primitive => return self.primitive == PrimitiveType.bool,
+            .primitive => return self.primitive == .bool,
             .optional => return true,
             else => return false,
         }
@@ -344,6 +354,7 @@ pub const TypeKind = enum {
 };
 
 pub const FunctionType = struct {
+    location: Location,
     generics: []Field,
     parameters: []Field,
     return_type: ?*const Type = null,
@@ -377,6 +388,11 @@ pub const Expression = struct {
         },
         typ: *const Type,
         identifier: []const u8,
+        match: struct {
+            expression: *Expression,
+            cases: []const MatchCase,
+            result_type: ?*const Type = null,
+        },
         binary: struct {
             op: Lexer.Token.Kind,
             left: *Expression,
@@ -408,6 +424,13 @@ pub const Expression = struct {
             end_location: Location,
             // analyse in the type checker
             result_type: ?*const Type = null,
+        },
+        ref: struct {
+            operand: *Expression,
+            mutable: bool,
+            end_location: Location,
+            // analyse in the type checker
+            result_type: *Type,
         },
         field: struct {
             record: *Expression,
@@ -457,11 +480,13 @@ pub const ExpressionKind = enum {
     structure_literal,
     typ,
     identifier,
+    match,
     binary,
     unary,
     call,
     subscript,
     deref,
+    ref,
     field,
     function,
     lambda,
@@ -473,19 +498,29 @@ pub const ExpressionKind = enum {
 };
 
 pub const Declaration = struct {
+    location: Location,
     public: bool = false,
     exported: bool = false,
     mutable: bool = false,
     identifier: []const u8,
     typ: ?*const Type = null,
-    initialiser: *Expression,
+    initialiser: ?*Expression = null,
     is_type: bool = false,
+    resolution: Resolution = .none,
+};
+
+pub const Resolution = enum {
+    none,
+    resolving,
+    resolved,
 };
 
 pub const Statement = struct {
     location: Location,
     attributes: []const *Expression,
-    variant: union(StatementKind) {
+    variant: Variant,
+
+    pub const Variant = union(StatementKind) {
         expression: *Expression,
         @"if": struct {
             condition: *Expression,
@@ -513,18 +548,13 @@ pub const Statement = struct {
             label: ?[]const u8,
             resolved_block: ?*Expression = null,
         },
-        match: struct {
-            expression: *Expression,
-            cases: []const MatchCase,
-            result_type: ?*const Type = null,
-        },
         declaration: Declaration,
         assignment: struct {
             target: *Expression,
             value: *Expression,
             kind: Lexer.Token.Kind,
         },
-    },
+    };
 };
 pub const StatementKind = enum {
     expression,
@@ -534,7 +564,6 @@ pub const StatementKind = enum {
     @"return",
     @"break",
     @"continue",
-    match,
     declaration,
     assignment,
 };

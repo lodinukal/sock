@@ -16,6 +16,7 @@ const Reporter = @This();
 allocator: std.mem.Allocator,
 source: []const u8 = &.{},
 reports: std.ArrayListUnmanaged(Error) = .{},
+extra_strings: std.ArrayListUnmanaged([]const u8) = .{},
 warning_count: u32 = 0,
 error_count: u32 = 0,
 info_count: u32 = 0,
@@ -39,6 +40,10 @@ pub fn deinit(self: *Reporter) void {
         self.allocator.free(got.message);
     }
     self.reports.deinit(self.allocator);
+    for (self.extra_strings.items) |got| {
+        self.allocator.free(got);
+    }
+    self.extra_strings.deinit(self.allocator);
 }
 
 pub fn push(
@@ -116,4 +121,10 @@ pub fn extractTokenLine(source: []const u8, line_target: u32) ?[]const u8 {
         index += 1;
     }
     return null;
+}
+
+pub fn allocPrint(self: *Reporter, comptime fmt: []const u8, args: anytype) ![]const u8 {
+    const string = try std.fmt.allocPrint(self.allocator, fmt, args);
+    try self.extra_strings.append(self.allocator, string);
+    return string;
 }

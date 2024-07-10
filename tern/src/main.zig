@@ -31,16 +31,13 @@ pub fn main() !void {
 
     const start_parse = std.time.nanoTimestamp();
     while (true) {
-        const stmt: *ast.Statement = parser.parseTopLevel() catch |err| {
+        _ = parser.parseTopLevel() catch |err| {
             if (err == error.FinishedParsing) {
                 break;
             }
             std.debug.print("{}\n", .{reporter});
             return err;
         };
-        if (stmt.variant == .@"if") {
-            recurseExpressionTree(stmt.variant.@"if".condition, 0);
-        }
     }
     const end_parse = std.time.nanoTimestamp();
 
@@ -58,13 +55,14 @@ pub fn main() !void {
         .symbols = &symbols,
     };
     defer {
+        check.deinit();
         std.debug.print("{}", .{reporter});
         std.debug.print("{}", .{counting});
-        check.deinit();
     }
 
     const start_check = std.time.nanoTimestamp();
-    try check.checkContainer(&container);
+    try check.loadContainer(&container);
+    try check.checkEntryPoint("ps_main");
     const end_check = std.time.nanoTimestamp();
 
     // var gen = IrGen{};

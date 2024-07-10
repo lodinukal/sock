@@ -35,15 +35,11 @@ let extract_position = fn(input: vs_output) -> float3 {
 
 let random = fn() -> u32 ---
 
+let uniter: fn () = fn() ---
+
 let fib = fn(n: i32) -> i32 {
     if (n <= 1i32) return n
     return fib(n - 1i32) + fib(n - 2i32)
-}
-
-let fruit = enum {
-    apple,
-    banana,
-    cherry,
 }
 
 @PIXEL
@@ -52,18 +48,41 @@ export fn ps_main(input: vs_output, in_string: string) -> ps_output {
         |> extract_position(_)
     let first_char = if (in_string.len > 0) in_string[0] else 0u8
 
-    let ox: ?u32 = nil
-    mut px = ox orelse {
-        2u32
+    let rr = match (fruit.apple) {
+        .apple => 1,
+        .banana => 2,
+        .cherry => 3,
     }
 
-    let discard_pixel = match (fruit) {
-        .apple => true,
-        .banana => true,
-        else => false,
-    }
+    mut x = fruit.apple.nomnomnom()
+    fruit.apple.thiswontmethodise()
+
+    let some_ptr: *vs_output = &input
 
     return .{
         color = float4{input.color[0], input.color[1], input.color[2], 1.0},
     }
 }
+
+let fruit = enum {
+    apple,
+    banana,
+    cherry,
+
+    let inner = enum {
+        fn hello() -> string {
+            return "hello"
+        }
+    }
+
+    fn nomnomnom(self: fruit) -> i32 {
+        print("eating", self)
+        return -10
+    }
+
+    fn thiswontmethodise(i: i32) {
+
+    }
+}
+
+let print = fn(_: string, _: fruit) ---

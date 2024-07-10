@@ -707,6 +707,9 @@ pub fn readNext(self: *Lexer) !Token {
         },
         '-' => {
             try self.consume();
+            if (std.ascii.isDigit(self.peek(0))) {
+                return try self.readNumber(start, self.offset - 1);
+            }
             if (self.peek(0) == '>') {
                 try self.consume();
                 return .{
